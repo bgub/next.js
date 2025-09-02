@@ -1640,9 +1640,7 @@ export const setupTests = (ctx: SetupTestsCtx) => {
 
     runTests(curCtx)
   })
-  ;(process.env.TURBOPACK_DEV || process.env.TURBOPACK_BUILD
-    ? describe.skip
-    : describe)('Production Mode Server support w/o next.config.js', () => {
+  describe('Production Mode Server support w/o next.config.js', () => {
     if (ctx.nextConfigImages) {
       // skip this test because it requires next.config.js
       return
@@ -1679,9 +1677,7 @@ export const setupTests = (ctx: SetupTestsCtx) => {
 
     runTests(curCtx)
   })
-  ;(process.env.TURBOPACK_DEV || process.env.TURBOPACK_BUILD
-    ? describe.skip
-    : describe)('Production Mode Server support with next.config.js', () => {
+  describe('Production Mode Server support with next.config.js', () => {
     const size = 399
     const curCtx: RunTestsCtx = {
       ...ctx,

@@ -189,35 +189,30 @@ function runTests(testMode: 'start' | 'dev') {
 const nextConfig = join(appDir, 'next.config.js')
 
 describe('nested index.js', () => {
-  ;(process.env.TURBOPACK_BUILD ? describe.skip : describe)(
-    'development mode',
-    () => {
-      beforeAll(async () => {
-        appPort = await findPort()
-        app = await launchApp(appDir, appPort)
-      })
-      afterAll(() => killApp(app))
+  describe('development mode', () => {
+    beforeAll(async () => {
+      appPort = await findPort()
+      app = await launchApp(appDir, appPort)
+    })
+    afterAll(() => killApp(app))
 
-      runTests('dev')
-    }
-  )
-  ;(process.env.TURBOPACK_DEV ? describe.skip : describe)(
-    'production mode',
-    () => {
-      beforeAll(async () => {
-        const curConfig = await fs.readFile(nextConfig, 'utf8')
+    runTests('dev')
+  })
 
-        if (curConfig.includes('target')) {
-          await fs.writeFile(nextConfig, `module.exports = {}`)
-        }
-        await nextBuild(appDir)
+  describe('production mode', () => {
+    beforeAll(async () => {
+      const curConfig = await fs.readFile(nextConfig, 'utf8')
 
-        appPort = await findPort()
-        app = await nextStart(appDir, appPort)
-      })
-      afterAll(() => killApp(app))
+      if (curConfig.includes('target')) {
+        await fs.writeFile(nextConfig, `module.exports = {}`)
+      }
+      await nextBuild(appDir)
 
-      runTests('start')
-    }
-  )
+      appPort = await findPort()
+      app = await nextStart(appDir, appPort)
+    })
+    afterAll(() => killApp(app))
+
+    runTests('start')
+  })
 })

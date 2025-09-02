@@ -148,30 +148,26 @@ const runTests = (getStderr, isDev) => {
 
 describe('Errors on invalid custom middleware matchers', () => {
   afterAll(() => fs.remove(middlewarePath))
-  ;(process.env.TURBOPACK_BUILD ? describe.skip : describe)(
-    'development mode',
-    () => {
-      runTests(async () => {
-        let stderr = ''
-        const port = await findPort()
-        await launchApp(appDir, port, {
-          onStderr(msg) {
-            stderr += msg
-          },
-        })
-        await fetchViaHTTP(port, '/').catch(() => {})
-        return stderr
-      }, true)
-    }
-  )
-  ;(process.env.TURBOPACK_DEV ? describe.skip : describe)(
-    'production mode',
-    () => {
-      runTests(async () => {
-        const { stderr } = await nextBuild(appDir, [], { stderr: true })
-        console.log(stderr)
-        return stderr
-      }, false)
-    }
-  )
+
+  describe('development mode', () => {
+    runTests(async () => {
+      let stderr = ''
+      const port = await findPort()
+      await launchApp(appDir, port, {
+        onStderr(msg) {
+          stderr += msg
+        },
+      })
+      await fetchViaHTTP(port, '/').catch(() => {})
+      return stderr
+    }, true)
+  })
+
+  describe('production mode', () => {
+    runTests(async () => {
+      const { stderr } = await nextBuild(appDir, [], { stderr: true })
+      console.log(stderr)
+      return stderr
+    }, false)
+  })
 })

@@ -340,29 +340,26 @@ describe('Next.js Script - Primary Strategies - Strict Mode', () => {
 })
 
 describe('Next.js Script - Primary Strategies - Production Mode', () => {
-  ;(process.env.TURBOPACK_DEV ? describe.skip : describe)(
-    'production mode',
-    () => {
-      beforeAll(async () => {
-        await nextBuild(appDir)
+  describe('production mode', () => {
+    beforeAll(async () => {
+      await nextBuild(appDir)
 
-        const app = nextServer({
-          dir: appDir,
-          dev: false,
-          quiet: true,
-        })
-
-        server = await startApp(
-          // @ts-expect-error -- Discovered when converting from JS to TS
-          app
-        )
-        appPort = server.address().port
-      })
-      afterAll(async () => {
-        await stopApp(server)
+      const app = nextServer({
+        dir: appDir,
+        dev: false,
+        quiet: true,
       })
 
-      runTests(false)
-    }
-  )
+      server = await startApp(
+        // @ts-expect-error -- Discovered when converting from JS to TS
+        app
+      )
+      appPort = server.address().port
+    })
+    afterAll(async () => {
+      await stopApp(server)
+    })
+
+    runTests(false)
+  })
 })
