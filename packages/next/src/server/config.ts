@@ -972,6 +972,12 @@ function assignDefaultsAndValidate(
     }
   }
 
+  if (result.cacheHandler && !existsSync(result.cacheHandler)) {
+    throw new Error(
+      `Invalid handler configured for "cacheHandler": ${result.cacheHandler}`
+    )
+  }
+
   if (result.experimental?.cacheHandlers) {
     const allowedHandlerNameRegex = /[a-z-]/
 
@@ -1012,7 +1018,7 @@ function assignDefaultsAndValidate(
       }
       if (invalidHandlerItems.length) {
         throw new Error(
-          `Invalid handler fields configured for "experimental.cacheHandler":\n${invalidHandlerItems.map((item) => `${key}: ${item.reason}`).join('\n')}`
+          `Invalid handler fields configured for "experimental.cacheHandlers":\n${invalidHandlerItems.map((item) => `${key}: ${item.reason}`).join('\n')}`
         )
       }
     }

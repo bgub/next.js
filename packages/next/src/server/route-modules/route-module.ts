@@ -371,10 +371,7 @@ export abstract class RouteModule<
     }
   }
 
-  public async loadCustomCacheHandlers(
-    req: IncomingMessage | BaseNextRequest,
-    nextConfig: NextConfigComplete
-  ) {
+  public async loadCustomCacheHandlers(nextConfig: NextConfigComplete) {
     if (process.env.NEXT_RUNTIME !== 'edge') {
       const { cacheHandlers } = nextConfig.experimental
       if (!cacheHandlers) return
@@ -389,22 +386,10 @@ export abstract class RouteModule<
         const { formatDynamicImportPath } =
           require('../../lib/format-dynamic-import-path') as typeof import('../../lib/format-dynamic-import-path')
 
-        const { join } = require('node:path') as typeof import('node:path')
-        const absoluteProjectDir = join(
-          /* turbopackIgnore: true */
-          process.cwd(),
-          getRequestMeta(req, 'relativeProjectDir') || this.relativeProjectDir
-        )
-
         setCacheHandler(
           kind,
           interopDefault(
-            await dynamicImportEsmDefault(
-              formatDynamicImportPath(
-                `${absoluteProjectDir}/${this.distDir}`,
-                handler
-              )
-            )
+            await dynamicImportEsmDefault(formatDynamicImportPath(handler))
           )
         )
       }
@@ -427,9 +412,7 @@ export abstract class RouteModule<
           require('../../lib/format-dynamic-import-path') as typeof import('../../lib/format-dynamic-import-path')
 
         CacheHandler = interopDefault(
-          await dynamicImportEsmDefault(
-            formatDynamicImportPath(this.distDir, cacheHandler)
-          )
+          await dynamicImportEsmDefault(formatDynamicImportPath(cacheHandler))
         )
       }
       const { join } = require('node:path') as typeof import('node:path')
@@ -439,7 +422,7 @@ export abstract class RouteModule<
         getRequestMeta(req, 'relativeProjectDir') || this.relativeProjectDir
       )
 
-      await this.loadCustomCacheHandlers(req, nextConfig)
+      await this.loadCustomCacheHandlers(nextConfig)
 
       // incremental-cache is request specific
       // although can have shared caches in module scope

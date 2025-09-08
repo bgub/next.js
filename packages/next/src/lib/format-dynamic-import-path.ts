@@ -6,14 +6,12 @@ import { pathToFileURL } from 'url'
  *
  * When an absolute Windows path is passed to it, it interprets the beginning of the path as a protocol (`C:`).
  * Therefore, it is important to always construct a complete path.
- * @param dir File directory
- * @param filePath Absolute or relative path
+ * @param absoluteFilePath Absolute path
  */
-export const formatDynamicImportPath = (dir: string, filePath: string) => {
-  const absoluteFilePath = path.isAbsolute(filePath)
-    ? filePath
-    : path.join(dir, filePath)
-  const formattedFilePath = pathToFileURL(absoluteFilePath).toString()
+export const formatDynamicImportPath = (absoluteFilePath: string) => {
+  if (!path.isAbsolute(absoluteFilePath)) {
+    throw new Error('filePath must be absolute.')
+  }
 
-  return formattedFilePath
+  return pathToFileURL(absoluteFilePath).toString()
 }

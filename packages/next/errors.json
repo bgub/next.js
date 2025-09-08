@@ -808,5 +808,8 @@
   "807": "Expected a %s response header.",
   "808": "Invalid binary HMR message: insufficient data (expected %s bytes, got %s)",
   "809": "Invalid binary HMR message of type %s",
-  "810": "React debug channel stream error"
+  "810": "React debug channel stream error",
+  "811": "filePath must be absolute.",
+  "812": "Invalid handler fields configured for \"experimental.cacheHandlers\":\\n%s",
+  "813": "Invalid handler configured for \"cacheHandler\": %s"
 }

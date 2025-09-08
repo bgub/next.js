@@ -14,7 +14,6 @@ export async function createIncrementalCache({
   cacheMaxMemorySize,
   fetchCacheKeyPrefix,
   distDir,
-  dir,
   flushToDisk,
   cacheHandlers,
   requestHeaders,
@@ -32,7 +31,7 @@ export async function createIncrementalCache({
   let CacheHandler: any
   if (cacheHandler) {
     CacheHandler = interopDefault(
-      await import(formatDynamicImportPath(dir, cacheHandler)).then(
+      await import(formatDynamicImportPath(cacheHandler)).then(
         (mod) => mod.default || mod
       )
     )
@@ -45,7 +44,7 @@ export async function createIncrementalCache({
       setCacheHandler(
         kind,
         interopDefault(
-          await import(formatDynamicImportPath(dir, handler)).then(
+          await import(formatDynamicImportPath(handler)).then(
             (mod) => mod.default || mod
           )
         )

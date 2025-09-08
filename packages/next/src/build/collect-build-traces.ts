@@ -132,13 +132,7 @@ export async function collectBuildTraces({
       // ensure we trace any dependencies needed for custom
       // incremental cache handler
       if (cacheHandler) {
-        sharedEntriesSet.push(
-          require.resolve(
-            path.isAbsolute(cacheHandler)
-              ? cacheHandler
-              : path.join(dir, cacheHandler)
-          )
-        )
+        sharedEntriesSet.push(require.resolve(cacheHandler))
       }
 
       if (cacheHandlers) {
