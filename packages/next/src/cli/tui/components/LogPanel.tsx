@@ -492,17 +492,22 @@ function LogEntry({
       const routeColor = getCategoryColor(category)
 
       // Find compile and render times from timings
-      const compileTime = data.timings?.find((t) => t.label === 'compile')
-      const renderTime = data.timings?.find((t) => t.label === 'render')
+      const compileTime = data.timings?.find(
+        (t: { label: string }) => t.label === 'compile'
+      )
+      const renderTime = data.timings?.find(
+        (t: { label: string }) => t.label === 'render'
+      )
 
       // Simple fetch indicator for unselected state
       const fetchCount = data.fetchMetrics?.length || 0
       const uncachedFetches =
         data.fetchMetrics?.filter(
-          (f) => f.cacheStatus === 'skip' || f.cacheStatus === 'miss'
+          (f: FetchMetricData) =>
+            f.cacheStatus === 'skip' || f.cacheStatus === 'miss'
         ) || []
       const fetchWarnings =
-        data.fetchMetrics?.filter((f) => f.cacheWarning) || []
+        data.fetchMetrics?.filter((f: FetchMetricData) => f.cacheWarning) || []
 
       // Request type: use minimal indicators
       const isAction = data.requestType === 'action'
@@ -727,7 +732,7 @@ function LogEntry({
                 )}
                 {stackLines && stackLines.length > 0 && (
                   <Box flexDirection="column" paddingLeft={4}>
-                    {stackLines.slice(0, 10).map((line, i) => (
+                    {stackLines.slice(0, 10).map((line: string, i: number) => (
                       <Text key={i} dimColor>
                         {line}
                       </Text>
