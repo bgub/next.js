@@ -127,6 +127,7 @@ import { handlePageMetadataResponse } from '../mcp/tools/get-page-metadata'
 import { setStackFrameResolver } from '../mcp/tools/utils/format-errors'
 import { recordMcpTelemetry } from '../mcp/mcp-telemetry-tracker'
 import { getFileLogger } from './browser-logs/file-logger'
+import { initLogStream, FileSink, IPCSink } from './log-stream'
 import type { ServerCacheStatus } from '../../next-devtools/dev-overlay/cache-indicator'
 import type { Lockfile } from '../../build/lockfile'
 import {
@@ -228,11 +229,28 @@ export async function createHotReloaderTurbopack(
   // of the current `next dev` invocation.
   hotReloaderSpan.stop()
 
-  // Initialize log monitor for file logging
-  // Enable logging by default in development mode
+  // Initialize structured logging
   const mcpServerEnabled = !!nextConfig.experimental.mcpServer
   const fileLogger = getFileLogger()
   fileLogger.initialize(distDir, mcpServerEnabled)
+
+  // Initialize new structured log stream
+  const logStream = initLogStream(1000)
+
+  // Add file sink if MCP is enabled (mirrors FileLogger behavior)
+  if (mcpServerEnabled) {
+    logStream.addSink(
+      new FileSink(join(distDir, 'logs', 'next-development.log'), {
+        flushInterval: 1000,
+        batchSize: 50,
+      })
+    )
+  }
+
+  // Add IPC sink if TUI is enabled
+  if (process.env.__NEXT_TUI_ENABLED) {
+    logStream.addSink(new IPCSink())
+  }
 
   const encryptionKey = await generateEncryptionKeyBase64({
     isBuild: false,

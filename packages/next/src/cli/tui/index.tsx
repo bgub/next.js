@@ -17,6 +17,7 @@ import {
 } from './file-logger'
 import { LogPanel } from './components/LogPanel'
 import { CompilationStatus } from './components/CompilationStatus'
+import { initLogStream } from '../../server/dev/log-stream'
 
 export interface TuiInstance {
   unmount: () => void
@@ -28,6 +29,9 @@ export function startTui(
   serverUrl: string,
   distDir: string
 ): TuiInstance {
+  // Initialize LogStream in parent process for efficient log storage
+  const parentLogStream = initLogStream(1000)
+
   function TuiApp({
     child: childProcess,
     serverUrl: url,
@@ -55,6 +59,7 @@ export function startTui(
       logFilter: 'all',
       compilationState: { loading: false },
     })
+    const [logUpdateTrigger, setLogUpdateTrigger] = useState(0)
 
     // Initialize file logger
     useEffect(() => {
@@ -229,7 +234,7 @@ export function startTui(
       []
     )
 
-    // Handle IPC messages from child process
+    // Handle IPC messages from child process and add to LogStream
     useEffect(() => {
       const handleMessage = (msg: any) => {
         if (!msg || typeof msg !== 'object') return
@@ -248,38 +253,47 @@ export function startTui(
               source
             )
           } else if (tuiMsg.type === 'structured-log') {
-            // Structured logs from log-requests.ts or receive-logs.ts
-            const payload = tuiMsg.payload
+            // Structured log from child process - add to parent's LogStream
+            const payload = tuiMsg.payload as any
 
-            // Handle console logs separately
+            // Determine level
+            let level: 'info' | 'warn' | 'error' = 'info'
             if (payload.type === 'console') {
-              const level: TuiLogEntry['level'] =
+              level =
                 payload.method === 'error'
                   ? 'error'
                   : payload.method === 'warn'
                     ? 'warn'
                     : 'info'
-              const source: TuiLogEntry['source'] =
-                payload.source === 'browser' ? 'browser' : 'userland'
-              addLog(level, payload.message, payload, source)
-              return
+            } else if (payload.type === 'warning') {
+              level = 'warn'
             }
 
-            // Other structured logs are system logs
-            const level: TuiLogEntry['level'] =
-              payload.type === 'warning' ? 'warn' : 'info'
-            // Create a displayable message from structured data
-            let message = ''
+            // Determine source
+            let source: 'system' | 'userland' | 'browser' = 'system'
+            if (payload.type === 'console') {
+              source = payload.source === 'browser' ? 'browser' : 'userland'
+            }
+
+            // Create message
+            let message = payload.message || ''
             if (payload.type === 'request') {
               message = `${payload.method} ${payload.url} ${payload.status} in ${payload.totalTime}ms`
             } else if (payload.type === 'fetch') {
               message = `${payload.method} ${payload.url} ${payload.status} in ${payload.totalTime}ms`
-            } else if (payload.type === 'cache-info') {
-              message = `Cache ${payload.cacheStatus}: ${payload.cacheReason}`
-            } else if (payload.type === 'warning') {
-              message = payload.message
             }
-            addLog(level, message, payload, 'system')
+
+            // Add to LogStream
+            parentLogStream.emit(level, message, {
+              source,
+              scope: payload.type,
+              structured: payload,
+              location: payload.location,
+              stack: payload.stack,
+            })
+
+            // Trigger UI update
+            setLogUpdateTrigger((prev) => prev + 1)
           }
         }
       }
@@ -338,9 +352,25 @@ export function startTui(
       return true
     }, [])
 
+    // Query logs from LogStream (replaces state.logs)
+    const getLogs = useCallback(() => {
+      return parentLogStream.recent(500).map((logEvent) => {
+        // Convert LogEvent to TuiLogEntry
+        return {
+          timestamp: logEvent.ts,
+          level: logEvent.level as TuiLogEntry['level'],
+          message: logEvent.message,
+          structured: logEvent.structured,
+          source: logEvent.source as TuiLogEntry['source'],
+          extraLines: [],
+        } as TuiLogEntry
+      })
+    }, [])
+
     // Get filtered log count for bounds checking
     const getFilteredLogCount = useCallback(() => {
-      return state.logs
+      const logs = getLogs()
+      return logs
         .filter((log) => {
           if (!shouldShowLog(log)) return false
           if (state.logFilter === 'all') return true
@@ -364,7 +394,7 @@ export function startTui(
           return true
         })
         .slice(-50).length
-    }, [state.logs, state.logFilter, shouldShowLog])
+    }, [getLogs, state.logFilter, shouldShowLog])
 
     // Auto-follow: keep selection on last log when new logs arrive
     useEffect(() => {
@@ -377,14 +407,15 @@ export function startTui(
       } else {
         setSelectedIndex(0)
       }
-    }, [state.logs, state.logFilter, autoFollow, getFilteredLogCount])
+    }, [logUpdateTrigger, state.logFilter, autoFollow, getFilteredLogCount])
 
     // Get userland log count for bounds checking
     const getUserlandLogCount = useCallback(() => {
-      return state.logs
+      const logs = getLogs()
+      return logs
         .filter((log) => log.source === 'userland' || log.source === 'browser')
         .slice(-50).length
-    }, [state.logs])
+    }, [getLogs])
 
     // Keyboard shortcuts
     useInput(
@@ -478,10 +509,11 @@ export function startTui(
 
         // 'c' to copy selected log to clipboard
         if (input === 'c') {
+          const logs = getLogs()
           const filteredLogs =
             activePanel === 'requests'
-              ? state.logs.filter(shouldShowLog).slice(-50)
-              : state.logs
+              ? logs.filter(shouldShowLog).slice(-50)
+              : logs
                   .filter(
                     (log) =>
                       log.source === 'userland' || log.source === 'browser'
@@ -558,7 +590,7 @@ export function startTui(
           />
         </Box>
         <LogPanel
-          logs={state.logs}
+          logs={getLogs()}
           logFilter={state.logFilter}
           selectedIndex={selectedIndex}
           terminalWidth={terminalWidth}

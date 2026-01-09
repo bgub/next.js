@@ -1,47 +1,59 @@
 /**
- * MCP tool for getting the path to the Next.js development log file.
- *
- * This tool returns the path to the {nextConfig.distDir}/logs/next-development.log file
- * that contains browser console logs and other development information.
+ * MCP tool for querying structured Next.js development logs.
  */
 import type { McpServer } from 'next/dist/compiled/@modelcontextprotocol/sdk/server/mcp'
-import { stat } from 'fs/promises'
-import { join } from 'path'
 import { mcpTelemetryTracker } from '../mcp-telemetry-tracker'
+import { getLogStream } from '../../dev/log-stream'
 
-export function registerGetLogsTool(server: McpServer, distDir: string) {
+export function registerGetLogsTool(server: McpServer, _distDir: string) {
   server.registerTool(
     'get_logs',
     {
       description:
-        'Get the path to the Next.js development log file. Returns the file path so the agent can read the logs directly.',
+        'Query structured Next.js development logs. Supports filtering by level, source, scope, and time range.',
+      inputSchema: {},
     },
-    async () => {
-      // Track telemetry
+    async (args: any) => {
       mcpTelemetryTracker.recordToolCall('mcp/get_logs')
 
       try {
-        const logFilePath = join(distDir, 'logs', 'next-development.log')
+        const logStream = getLogStream()
+        const limit = args.limit || 100
 
-        // Check if the log file exists
-        try {
-          await stat(logFilePath)
-        } catch (error) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Log file not found at ${logFilePath}.`,
-              },
-            ],
-          }
+        let logs = args.since
+          ? logStream.since(args.since, limit)
+          : logStream.recent(limit)
+
+        // Apply filters
+        if (args.level) {
+          logs = logs.filter((log) => log.level === args.level)
         }
+        if (args.source) {
+          logs = logs.filter((log) => log.source === args.source)
+        }
+        if (args.scope) {
+          logs = logs.filter((log) => log.scope === args.scope)
+        }
+
+        const formattedLogs = logs.map((log) => {
+          const timestamp = new Date(log.ts).toISOString()
+          const parts = [
+            `[${timestamp}]`,
+            `[${log.level.toUpperCase()}]`,
+            log.scope ? `[${log.scope}]` : '',
+            log.message,
+          ]
+          return parts.filter(Boolean).join(' ')
+        })
+
+        const stats = logStream.stats()
+        const summary = `Showing ${formattedLogs.length} logs (buffer: ${stats.count}/${stats.capacity})\n\n`
 
         return {
           content: [
             {
               type: 'text',
-              text: `Next.js log file path: ${logFilePath}`,
+              text: summary + formattedLogs.join('\n'),
             },
           ],
         }
@@ -50,7 +62,7 @@ export function registerGetLogsTool(server: McpServer, distDir: string) {
           content: [
             {
               type: 'text',
-              text: `Error getting log file path: ${error instanceof Error ? error.message : String(error)}`,
+              text: `Error querying logs: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
         }

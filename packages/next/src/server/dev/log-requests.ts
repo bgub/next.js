@@ -18,6 +18,7 @@ import { getServerActionRequestMetadata } from '../lib/server-action-request-met
 import { traceGlobals } from '../../trace/shared'
 import { join } from 'path'
 import { readFileSync } from 'fs'
+import { getLogStream } from './log-stream'
 
 // Cache the manifest to avoid reading it on every request
 let actionManifestCache: {
@@ -112,44 +113,44 @@ export function logRequests(
   devRequestTimingInternalsEnd: bigint | undefined,
   devGenerateStaticParamsDuration: bigint | undefined
 ): void {
-  // For TUI: send structured data with fetch metrics bundled
-  if (process.env.__NEXT_TUI_ENABLED && process.send) {
-    sendStructuredRequestLog(
-      request,
-      response.statusCode,
-      requestStartTime,
-      requestEndTime,
-      devRequestTimingMiddlewareStart,
-      devRequestTimingMiddlewareEnd,
-      devRequestTimingInternalsEnd,
-      devGenerateStaticParamsDuration,
-      loggingConfig
-    )
-    return // Skip regular logging for TUI
-  }
+  // Emit structured log via LogStream (handles TUI, MCP, file logging)
+  emitStructuredRequestLog(
+    request,
+    response.statusCode,
+    requestStartTime,
+    requestEndTime,
+    devRequestTimingMiddlewareStart,
+    devRequestTimingMiddlewareEnd,
+    devRequestTimingInternalsEnd,
+    devGenerateStaticParamsDuration,
+    loggingConfig
+  )
 
-  if (!ignoreLoggingIncomingRequests(request, loggingConfig)) {
-    logIncomingRequests(
-      request,
-      requestStartTime,
-      requestEndTime,
-      response.statusCode,
-      devRequestTimingMiddlewareStart,
-      devRequestTimingMiddlewareEnd,
-      devRequestTimingInternalsEnd,
-      devGenerateStaticParamsDuration
-    )
-  }
+  // Traditional console logging (skip when TUI is enabled)
+  if (!process.env.__NEXT_TUI_ENABLED) {
+    if (!ignoreLoggingIncomingRequests(request, loggingConfig)) {
+      logIncomingRequests(
+        request,
+        requestStartTime,
+        requestEndTime,
+        response.statusCode,
+        devRequestTimingMiddlewareStart,
+        devRequestTimingMiddlewareEnd,
+        devRequestTimingInternalsEnd,
+        devGenerateStaticParamsDuration
+      )
+    }
 
-  if (request.fetchMetrics) {
-    for (const fetchMetric of request.fetchMetrics) {
-      logFetchMetric(fetchMetric, loggingConfig)
+    if (request.fetchMetrics) {
+      for (const fetchMetric of request.fetchMetrics) {
+        logFetchMetric(fetchMetric, loggingConfig)
+      }
     }
   }
 }
 
-// Send a complete request log with all fetch metrics to TUI
-function sendStructuredRequestLog(
+// Emit a structured request log via LogStream
+function emitStructuredRequestLog(
   request: NodeNextRequest,
   statusCode: number,
   requestStartTime: bigint,
@@ -251,22 +252,23 @@ function sendStructuredRequestLog(
   // Look up action info from manifest if this is an action
   const actionInfo = isFetchAction ? getActionInfo(actionId) : undefined
 
-  process.send?.({
-    tuiMessage: {
-      type: 'structured-log',
-      payload: {
-        type: 'request',
-        method: request.method,
-        url,
-        status: statusCode,
-        totalTime: Number(totalRequestTime / BigInt(1_000_000)),
-        requestType,
-        actionId: isFetchAction ? actionId : undefined,
-        actionName: actionInfo?.name,
-        actionFile: actionInfo?.file,
-        timings: fixedTimings,
-        fetchMetrics: fetchMetrics.length > 0 ? fetchMetrics : undefined,
-      },
+  // Emit to LogStream (automatically goes to TUI, MCP, file via sinks)
+  const logStream = getLogStream()
+  const totalTime = Number(totalRequestTime / BigInt(1_000_000))
+  logStream.info(`${request.method} ${url} ${statusCode} in ${totalTime}ms`, {
+    scope: 'request',
+    structured: {
+      type: 'request',
+      method: request.method,
+      url,
+      status: statusCode,
+      totalTime,
+      requestType,
+      actionId: isFetchAction ? actionId : undefined,
+      actionName: actionInfo?.name,
+      actionFile: actionInfo?.file,
+      timings: fixedTimings,
+      fetchMetrics: fetchMetrics.length > 0 ? fetchMetrics : undefined,
     },
   })
 }
