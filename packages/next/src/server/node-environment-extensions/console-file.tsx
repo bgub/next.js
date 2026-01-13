@@ -1,5 +1,5 @@
 import { consoleAsyncStorage } from '../app-render/console-async-storage.external'
-import { getFileLogger } from '../dev/browser-logs/file-logger'
+import { getLogStream, methodToLevel } from '../dev/log-stream'
 import { formatConsoleArgs } from '../../client/lib/console'
 import { getServerLogHandler } from '../dev/browser-logs/receive-logs'
 
@@ -59,8 +59,10 @@ function patchConsoleMethodDEV(methodName: InterceptableConsoleMethod): void {
         }
 
         const ret = originalMethod.apply(this, args)
-        const fileLogger = getFileLogger()
-        fileLogger.logServer(methodName.toUpperCase(), cleanMessage)
+        getLogStream().emit(methodToLevel(methodName), cleanMessage, {
+          source: 'userland',
+          scope: 'console',
+        })
         return ret
       }
     }

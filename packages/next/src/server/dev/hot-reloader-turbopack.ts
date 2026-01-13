@@ -126,7 +126,6 @@ import { handleErrorStateResponse } from '../mcp/tools/get-errors'
 import { handlePageMetadataResponse } from '../mcp/tools/get-page-metadata'
 import { setStackFrameResolver } from '../mcp/tools/utils/format-errors'
 import { recordMcpTelemetry } from '../mcp/mcp-telemetry-tracker'
-import { getFileLogger } from './browser-logs/file-logger'
 import { initLogStream, FileSink, IPCSink } from './log-stream'
 import type { ServerCacheStatus } from '../../next-devtools/dev-overlay/cache-indicator'
 import type { Lockfile } from '../../build/lockfile'
@@ -231,10 +230,6 @@ export async function createHotReloaderTurbopack(
 
   // Initialize structured logging
   const mcpServerEnabled = !!nextConfig.experimental.mcpServer
-  const fileLogger = getFileLogger()
-  fileLogger.initialize(distDir, mcpServerEnabled)
-
-  // Initialize new structured log stream
   const logStream = initLogStream(1000)
 
   // Add file sink if MCP is enabled (mirrors FileLogger behavior)

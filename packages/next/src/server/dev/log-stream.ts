@@ -14,6 +14,21 @@
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 export type LogSource = 'system' | 'userland' | 'browser'
 
+/** Convert console method name to LogLevel */
+export function methodToLevel(method: string): LogLevel {
+  switch (method.toLowerCase()) {
+    case 'error':
+    case 'assert':
+      return 'error'
+    case 'warn':
+      return 'warn'
+    case 'debug':
+      return 'debug'
+    default:
+      return 'info'
+  }
+}
+
 export interface LogEvent {
   ts: number
   sessionId: string

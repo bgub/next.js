@@ -14,7 +14,7 @@ import {
   UNDEFINED_MARKER,
 } from '../../../next-devtools/shared/forward-logs-shared'
 import { formatConsoleArgs } from '../../../client/lib/console'
-import { getFileLogger } from './file-logger'
+import { getLogStream, methodToLevel } from '../log-stream'
 
 export function restoreUndefined(x: any): any {
   if (x === UNDEFINED_MARKER) return undefined
@@ -440,29 +440,19 @@ async function handleDefaultConsole(
     }
   }
 
-  // Send to TUI if enabled
-  if (process.env.__NEXT_TUI_ENABLED && process.send) {
-    const message = cleanConsoleArgsForFileLogging(consoleArgs)
-    process.send({
-      tuiMessage: {
-        type: 'structured-log',
-        payload: {
-          type: 'console',
-          source: isServerLog ? 'server' : 'browser',
-          method: entry.method,
-          message,
-          location,
-          stack: stackLines,
-        },
-      },
-    })
-    // Still log to file but skip console output
-    const fileLogger = getFileLogger()
-    if (isServerLog) {
-      fileLogger.logServer(entry.method.toUpperCase(), message)
-    } else {
-      fileLogger.logBrowser(entry.method.toUpperCase(), message)
-    }
+  const logStream = getLogStream()
+  const message = cleanConsoleArgsForFileLogging(consoleArgs)
+
+  // Emit to LogStream (handles TUI via IPCSink, file via FileSink)
+  logStream.emit(methodToLevel(entry.method), message, {
+    source: isServerLog ? 'userland' : 'browser',
+    scope: 'console',
+    location,
+    stack: stackLines,
+  })
+
+  // Skip console output when TUI is enabled (TUI displays logs)
+  if (process.env.__NEXT_TUI_ENABLED) {
     return
   }
 
@@ -477,18 +467,6 @@ async function handleDefaultConsole(
   )
   const consoleMethod = forwardConsole[entry.method] || forwardConsole.log
   ;(consoleMethod as (...args: any[]) => void)(browserPrefix, ...withStackEntry)
-
-  // Process enqueued logs and write to file
-  // Log to file with correct source based on context
-  const fileLogger = getFileLogger()
-
-  // Use cleaned console args to strip out background and color format specifiers
-  const message = cleanConsoleArgsForFileLogging(consoleArgs)
-  if (isServerLog) {
-    fileLogger.logServer(entry.method.toUpperCase(), message)
-  } else {
-    fileLogger.logBrowser(entry.method.toUpperCase(), message)
-  }
 }
 
 export async function handleLog(
@@ -500,7 +478,8 @@ export async function handleLog(
   // Determine the source based on the context
   const isServerLog = ctx.isServer || ctx.isEdgeServer
   const browserPrefix = isServerLog ? cyan('[server]') : cyan('[browser]')
-  const fileLogger = getFileLogger()
+  const logStream = getLogStream()
+  const logSource = isServerLog ? 'userland' : 'browser'
 
   for (const entry of entries) {
     try {
@@ -559,13 +538,13 @@ export async function handleLog(
         // any logged errors are anything that are logged as "red" in the browser but aren't only an Error (console.error, Promise.reject(100))
         case 'any-logged-error': {
           const consoleArgs = await prepareConsoleErrorArgs(entry, ctx, distDir)
-          forwardConsole.error(browserPrefix, ...consoleArgs)
-
-          // Process enqueued logs and write to file
-          fileLogger.logBrowser(
-            'ERROR',
-            cleanConsoleArgsForFileLogging(consoleArgs)
-          )
+          if (!process.env.__NEXT_TUI_ENABLED) {
+            forwardConsole.error(browserPrefix, ...consoleArgs)
+          }
+          logStream.error(cleanConsoleArgsForFileLogging(consoleArgs), {
+            source: logSource,
+            scope: 'console',
+          })
           break
         }
         // formatted error is an explicit error event (rejections, uncaught errors)
@@ -575,13 +554,13 @@ export async function handleLog(
             ctx,
             distDir
           )
-          forwardConsole.error(browserPrefix, ...formattedArgs)
-
-          // Process enqueued logs and write to file
-          fileLogger.logBrowser(
-            'ERROR',
-            cleanConsoleArgsForFileLogging(formattedArgs)
-          )
+          if (!process.env.__NEXT_TUI_ENABLED) {
+            forwardConsole.error(browserPrefix, ...formattedArgs)
+          }
+          logStream.error(cleanConsoleArgsForFileLogging(formattedArgs), {
+            source: logSource,
+            scope: 'console',
+          })
           break
         }
         default: {
@@ -591,38 +570,47 @@ export async function handleLog(
       switch (entry.kind) {
         case 'any-logged-error': {
           const consoleArgs = await prepareConsoleErrorArgs(entry, ctx, distDir)
-          forwardConsole.error(browserPrefix, ...consoleArgs)
-          // Process enqueued logs and write to file
-          fileLogger.logBrowser(
-            'ERROR',
-            cleanConsoleArgsForFileLogging(consoleArgs)
-          )
+          if (!process.env.__NEXT_TUI_ENABLED) {
+            forwardConsole.error(browserPrefix, ...consoleArgs)
+          }
+          logStream.error(cleanConsoleArgsForFileLogging(consoleArgs), {
+            source: logSource,
+            scope: 'console',
+          })
           break
         }
         case 'console': {
           const consoleMethod =
             forwardConsole[entry.method] || forwardConsole.log
           const consoleArgs = await prepareConsoleArgs(entry, ctx, distDir)
-          ;(consoleMethod as (...args: any[]) => void)(
-            browserPrefix,
-            ...consoleArgs
-          )
-
-          // Process enqueued logs and write to file
-          fileLogger.logBrowser(
-            'ERROR',
-            cleanConsoleArgsForFileLogging(consoleArgs)
+          if (!process.env.__NEXT_TUI_ENABLED) {
+            ;(consoleMethod as (...args: any[]) => void)(
+              browserPrefix,
+              ...consoleArgs
+            )
+          }
+          logStream.emit(
+            methodToLevel(entry.method),
+            cleanConsoleArgsForFileLogging(consoleArgs),
+            {
+              source: logSource,
+              scope: 'console',
+            }
           )
           break
         }
         case 'formatted-error': {
-          forwardConsole.error(browserPrefix, `${entry.prefix}\n`, entry.stack)
-
-          // Process enqueued logs and write to file
-          fileLogger.logBrowser(
-            'ERROR',
-            cleanConsoleArgsForFileLogging([`${entry.prefix}\n${entry.stack}`])
-          )
+          if (!process.env.__NEXT_TUI_ENABLED) {
+            forwardConsole.error(
+              browserPrefix,
+              `${entry.prefix}\n`,
+              entry.stack
+            )
+          }
+          logStream.error(`${entry.prefix}\n${entry.stack}`, {
+            source: logSource,
+            scope: 'console',
+          })
           break
         }
         default: {
@@ -704,10 +692,13 @@ export async function receiveBrowserLogsTurbopack(opts: {
 export async function handleClientFileLogs(
   logs: Array<{ timestamp: string; level: string; message: string }>
 ): Promise<void> {
-  const fileLogger = getFileLogger()
+  const logStream = getLogStream()
 
   for (const log of logs) {
-    fileLogger.logBrowser(log.level, log.message)
+    logStream.emit(methodToLevel(log.level), log.message, {
+      source: 'browser',
+      scope: 'console',
+    })
   }
 }
 

@@ -112,7 +112,7 @@ import {
 import { getMcpMiddleware } from '../mcp/get-mcp-middleware'
 import { setStackFrameResolver } from '../mcp/tools/utils/format-errors'
 import { recordMcpTelemetry } from '../mcp/mcp-telemetry-tracker'
-import { getFileLogger } from './browser-logs/file-logger'
+import { initLogStream, FileSink, IPCSink } from './log-stream'
 import type { ServerCacheStatus } from '../../next-devtools/dev-overlay/cache-indicator'
 import type { Lockfile } from '../../build/lockfile'
 import {
@@ -332,11 +332,22 @@ export default class HotReloaderWebpack implements NextJsHotReloaderInterface {
     // of the current `next dev` invocation.
     this.hotReloaderSpan.stop()
 
-    // Initialize log monitor for file logging
-    // Enable logging by default in development mode
+    // Initialize structured logging
     const mcpServerEnabled = !!config.experimental.mcpServer
-    const fileLogger = getFileLogger()
-    fileLogger.initialize(this.distDir, mcpServerEnabled)
+    const logStream = initLogStream(1000)
+
+    if (mcpServerEnabled) {
+      logStream.addSink(
+        new FileSink(join(this.distDir, 'logs', 'next-development.log'), {
+          flushInterval: 1000,
+          batchSize: 50,
+        })
+      )
+    }
+
+    if (process.env.__NEXT_TUI_ENABLED) {
+      logStream.addSink(new IPCSink())
+    }
 
     onDevServerCleanup?.(async () => {
       await lockfile?.unlock()
