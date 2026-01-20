@@ -6,6 +6,7 @@ import type { Span } from '../trace'
 import type getBaseWebpackConfig from './webpack-config'
 import type { TelemetryPluginState } from './webpack/plugins/telemetry-plugin/telemetry-plugin'
 import type { Telemetry } from '../telemetry/storage'
+import type { Worker } from '../lib/worker'
 
 // A layer for storing data that is used by plugins to communicate with each
 // other between different steps of the build process. This is only internal
@@ -101,3 +102,23 @@ export const NextBuildContext: Partial<{
     pages: string[]
   }
 }> = {}
+
+export interface FunctionsConfigManifest {
+  version: number
+  functions: Record<
+    string,
+    {
+      maxDuration?: number | undefined
+      runtime?: 'nodejs'
+      regions?: string[] | string
+      matchers?: Array<{
+        regexp: string
+        originalSource: string
+        has?: Rewrite['has']
+        missing?: Rewrite['has']
+      }>
+    }
+  >
+}
+
+export type StaticWorker = typeof import('./worker') & Worker

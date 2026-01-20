@@ -775,7 +775,7 @@ async function exportAppImpl(
       })
     }
 
-    results = await exportPagesInBatches(worker, initialPhaseExportPaths)
+    results = await exportPagesInBatches(worker!, initialPhaseExportPaths)
 
     if (finalPhaseExportPaths.length > 0) {
       const renderResumeDataCachesByPage = buildRDCCacheByPage(
@@ -784,7 +784,7 @@ async function exportAppImpl(
       )
 
       const finalPhaseResults = await exportPagesInBatches(
-        worker,
+        worker!,
         finalPhaseExportPaths,
         renderResumeDataCachesByPage
       )

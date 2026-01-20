@@ -5,7 +5,6 @@ import type {
   NextConfigRuntime,
 } from '../server/config-shared'
 import type { MiddlewareManifest } from './webpack/plugins/middleware-plugin'
-import type { ActionManifest } from './webpack/plugins/flight-client-entry-plugin'
 import type { CacheControl, Revalidate } from '../server/lib/cache-control'
 
 import '../lib/setup-exception-listeners'
@@ -22,7 +21,6 @@ import findUp from 'next/dist/compiled/find-up'
 import { nanoid } from 'next/dist/compiled/nanoid/index.cjs'
 import path from 'path'
 import {
-  STATIC_STATUS_PAGE_GET_INITIAL_PROPS_ERROR,
   PUBLIC_DIR_MIDDLEWARE_CONFLICT,
   MIDDLEWARE_FILENAME,
   PROXY_FILENAME,
@@ -70,7 +68,6 @@ import {
   MIDDLEWARE_MANIFEST,
   APP_PATHS_MANIFEST,
   APP_PATH_ROUTES_MANIFEST,
-  RSC_MODULE_TYPES,
   NEXT_FONT_MANIFEST,
   SUBRESOURCE_INTEGRITY_MANIFEST,
   MIDDLEWARE_BUILD_MANIFEST,
@@ -112,6 +109,10 @@ import {
 import type { EventBuildFeatureUsage } from '../telemetry/events'
 import { Telemetry } from '../telemetry/storage'
 import { discoverRoutes, createPagesMapping } from './route-discovery'
+import {
+  analyzePages,
+  errorFromUnsupportedSegmentConfig,
+} from './page-analysis'
 import { sortByPageExts } from './sort-by-page-exts'
 import { getStaticInfoIncludingLayouts } from './get-static-info-including-layouts'
 import { PAGE_TYPES } from '../lib/page-types'
@@ -126,20 +127,17 @@ import {
   printTreeView,
   copyTracedFiles,
   isReservedPage,
-  isAppBuiltinPage,
   collectRoutesUsingEdgeRuntime,
   collectMeta,
   isProxyFile,
   pageToRoute,
 } from './utils'
-import type { DynamicManifestRoute, PageInfo, PageInfos } from './utils'
+import type { DynamicManifestRoute, PageInfo } from './utils'
 import type { FallbackRouteParam, PrerenderedRoute } from './static-paths/types'
-import type { AppSegmentConfig } from './segment-config/app/app-segment-config'
 import { writeBuildId } from './write-build-id'
 import { normalizeLocalePath } from '../shared/lib/i18n/normalize-locale-path'
 import isError from '../lib/is-error'
 import type { NextError } from '../lib/is-error'
-import { isEdgeRuntime } from '../lib/is-edge-runtime'
 import { recursiveCopy } from '../lib/recursive-copy'
 import { lockfilePatchPromise, teardownTraceSubscriber } from './swc'
 import { installBindings } from './swc/install-bindings'
@@ -158,7 +156,12 @@ import {
   type NEXT_REWRITTEN_QUERY_HEADER,
 } from '../client/components/app-router-headers'
 import { webpackBuild } from './webpack-build'
-import { NextBuildContext } from './build-context'
+import {
+  NextBuildContext,
+  type FunctionsConfigManifest,
+  type StaticWorker,
+} from './build-context'
+export type { FunctionsConfigManifest, StaticWorker } from './build-context'
 import { normalizePathSep } from '../shared/lib/page-path/normalize-path-sep'
 import { isAppRouteRoute } from '../lib/is-app-route-route'
 import { createClientRouterFilter } from '../lib/create-client-router-filter'
@@ -581,24 +584,6 @@ async function writeClientSsgManifest(
   )
 }
 
-export interface FunctionsConfigManifest {
-  version: number
-  functions: Record<
-    string,
-    {
-      maxDuration?: number | undefined
-      runtime?: 'nodejs'
-      regions?: string[] | string
-      matchers?: Array<{
-        regexp: string
-        originalSource: string
-        has?: Rewrite['has']
-        missing?: Rewrite['has']
-      }>
-    }
-  >
-}
-
 async function writeFunctionsConfigManifest(
   distDir: string,
   manifest: FunctionsConfigManifest
@@ -811,7 +796,6 @@ const staticWorkerExposedMethods = [
   'getDefinedNamedExports',
   'exportPages',
 ] as const
-export type StaticWorker = typeof import('./worker') & Worker
 export function createStaticWorker(
   config: NextConfigComplete,
   options: {
@@ -1963,22 +1947,6 @@ export default async function build(
 
       const buildManifestPath = path.join(distDir, BUILD_MANIFEST)
 
-      let staticAppPagesCount = 0
-      let serverAppPagesCount = 0
-      let edgeRuntimeAppCount = 0
-      let edgeRuntimePagesCount = 0
-      const ssgPages = new Set<string>()
-      const ssgStaticFallbackPages = new Set<string>()
-      const ssgBlockingFallbackPages = new Set<string>()
-      const staticPages = new Set<string>()
-      const invalidPages = new Set<string>()
-      const serverPropsPages = new Set<string>()
-      const additionalPaths = new Map<string, PrerenderedRoute[]>()
-      const staticPaths = new Map<string, PrerenderedRoute[]>()
-      const appNormalizedPaths = new Map<string, string>()
-      const fallbackModes = new Map<string, FallbackMode>()
-      const appDefaultConfigs = new Map<string, AppSegmentConfig>()
-      const pageInfos: PageInfos = new Map<string, PageInfo>()
       let pagesManifest = await readManifest<PagesManifest>(pagesManifestPath)
       const buildManifest = await readManifest<BuildManifest>(buildManifestPath)
 
@@ -2009,519 +1977,52 @@ export default async function build(
       const analysisBegin = process.hrtime()
       const staticCheckSpan = nextBuildSpan.traceChild('static-check')
 
-      const functionsConfigManifest: FunctionsConfigManifest = {
-        version: 1,
-        functions: {},
-      }
-
       const {
+        pageInfos,
+        ssgPages,
+        ssgStaticFallbackPages,
+        ssgBlockingFallbackPages,
+        staticPages,
+        invalidPages,
+        serverPropsPages,
+        additionalPaths,
+        staticPaths,
+        appNormalizedPaths,
+        fallbackModes,
+        appDefaultConfigs,
+        functionsConfigManifest,
         customAppGetInitialProps,
         namedExports,
         isNextImageImported,
         hasNonStaticErrorPage,
-      } = await staticCheckSpan.traceAsyncFn(async () => {
-        if (isCompileMode) {
-          return {
-            customAppGetInitialProps: false,
-            namedExports: [],
-            isNextImageImported: true,
-            hasNonStaticErrorPage: hasUserPagesRoutes,
-          }
-        }
-
-        const { configFileName } = config
-        const sriEnabled = Boolean(config.experimental.sri?.algorithm)
-
-        const nonStaticErrorPageSpan = staticCheckSpan.traceChild(
-          'check-static-error-page'
-        )
-        const errorPageHasCustomGetInitialProps =
-          nonStaticErrorPageSpan.traceAsyncFn(
-            async () =>
-              hasCustomErrorPage &&
-              (await staticWorker.hasCustomGetInitialProps({
-                page: '/_error',
-                distDir,
-                checkingApp: false,
-                sriEnabled,
-              }))
-          )
-
-        const errorPageStaticResult = nonStaticErrorPageSpan.traceAsyncFn(
-          async () =>
-            hasCustomErrorPage &&
-            staticWorker.isPageStatic({
-              dir,
-              page: '/_error',
-              distDir,
-              configFileName,
-              cacheComponents: isAppCacheComponentsEnabled,
-              authInterrupts: isAuthInterruptsEnabled,
-              httpAgentOptions: config.httpAgentOptions,
-              locales: config.i18n?.locales,
-              defaultLocale: config.i18n?.defaultLocale,
-              nextConfigOutput: config.output,
-              pprConfig: config.experimental.ppr,
-              cacheLifeProfiles: config.cacheLife,
-              buildId,
-              sriEnabled,
-              cacheMaxMemorySize: config.cacheMaxMemorySize,
-            })
-        )
-
-        const appPageToCheck = '/_app'
-
-        const customAppGetInitialPropsPromise = hasUserPagesRoutes
-          ? staticWorker.hasCustomGetInitialProps({
-              page: appPageToCheck,
-              distDir,
-              checkingApp: true,
-              sriEnabled,
-            })
-          : Promise.resolve(false)
-
-        const namedExportsPromise = hasUserPagesRoutes
-          ? staticWorker.getDefinedNamedExports({
-              page: appPageToCheck,
-              distDir,
-              sriEnabled,
-            })
-          : Promise.resolve([])
-
-        // eslint-disable-next-line @typescript-eslint/no-shadow
-        let isNextImageImported: boolean | undefined
-
-        const middlewareManifest: MiddlewareManifest = require(
-          path.join(distDir, SERVER_DIRECTORY, MIDDLEWARE_MANIFEST)
-        )
-
-        const actionManifest = appDir
-          ? (require(
-              path.join(
-                distDir,
-                SERVER_DIRECTORY,
-                SERVER_REFERENCE_MANIFEST + '.json'
-              )
-            ) as ActionManifest)
-          : null
-        const entriesWithAction = actionManifest ? new Set() : null
-        if (actionManifest && entriesWithAction) {
-          for (const id in actionManifest.node) {
-            for (const entry in actionManifest.node[id].workers) {
-              entriesWithAction.add(entry)
-            }
-          }
-          for (const id in actionManifest.edge) {
-            for (const entry in actionManifest.edge[id].workers) {
-              entriesWithAction.add(entry)
-            }
-          }
-        }
-
-        for (const key of Object.keys(middlewareManifest?.functions)) {
-          if (key.startsWith('/api')) {
-            edgeRuntimePagesCount++
-          }
-        }
-
-        await Promise.all(
-          Object.entries(pageKeys)
-            .reduce<Array<{ pageType: keyof typeof pageKeys; page: string }>>(
-              (acc, [key, files]) => {
-                if (!files) {
-                  return acc
-                }
-
-                const pageType = key as keyof typeof pageKeys
-
-                for (const page of files) {
-                  acc.push({ pageType, page })
-                }
-
-                return acc
-              },
-              []
-            )
-            .map(({ pageType, page }) => {
-              const checkPageSpan = staticCheckSpan.traceChild('check-page', {
-                page,
-              })
-              return checkPageSpan.traceAsyncFn(async () => {
-                const actualPage = normalizePagePath(page)
-
-                let isRoutePPREnabled = false
-                let isSSG = false
-                let isStatic = false
-                let isServerComponent = false
-                let ssgPageRoutes: string[] | null = null
-                let pagePath = ''
-
-                if (pageType === 'pages') {
-                  pagePath =
-                    pagesPaths.find((p) => {
-                      p = normalizePathSep(p)
-                      return (
-                        p.startsWith(actualPage + '.') ||
-                        p.startsWith(actualPage + '/index.')
-                      )
-                    }) || ''
-                }
-                let originalAppPath: string | undefined
-
-                if (pageType === 'app' && mappedAppPages) {
-                  for (const [originalPath, normalizedPath] of Object.entries(
-                    appPathRoutes
-                  )) {
-                    if (normalizedPath === page) {
-                      pagePath = mappedAppPages[originalPath].replace(
-                        /^private-next-app-dir/,
-                        ''
-                      )
-                      originalAppPath = originalPath
-                      break
-                    }
-                  }
-                }
-
-                const pageFilePath = isAppBuiltinPage(pagePath)
-                  ? pagePath
-                  : path.join(
-                      (pageType === 'pages' ? pagesDir : appDir) || '',
-                      pagePath
-                    )
-
-                const isInsideAppDir = pageType === 'app'
-                const staticInfo = pagePath
-                  ? await getStaticInfoIncludingLayouts({
-                      isInsideAppDir,
-                      pageFilePath,
-                      pageExtensions: config.pageExtensions,
-                      appDir,
-                      config,
-                      isDev: false,
-                      // If this route is an App Router page route, inherit the
-                      // route segment configs (e.g. `runtime`) from the layout by
-                      // passing the `originalAppPath`, which should end with `/page`.
-                      page: isInsideAppDir ? originalAppPath! : page,
-                    })
-                  : undefined
-
-                if (staticInfo?.hadUnsupportedValue) {
-                  errorFromUnsupportedSegmentConfig()
-                }
-
-                // If there's any thing that would contribute to the functions
-                // configuration, we need to add it to the manifest.
-                if (
-                  typeof staticInfo?.runtime !== 'undefined' ||
-                  typeof staticInfo?.maxDuration !== 'undefined' ||
-                  typeof staticInfo?.preferredRegion !== 'undefined'
-                ) {
-                  const regions = staticInfo?.preferredRegion
-                    ? typeof staticInfo.preferredRegion === 'string'
-                      ? [staticInfo.preferredRegion]
-                      : staticInfo.preferredRegion
-                    : undefined
-
-                  functionsConfigManifest.functions[page] = {
-                    maxDuration: staticInfo?.maxDuration,
-                    ...(regions && { regions }),
-                  }
-                }
-
-                const pageRuntime = middlewareManifest.functions[
-                  originalAppPath || page
-                ]
-                  ? 'edge'
-                  : staticInfo?.runtime
-
-                if (!isCompileMode) {
-                  isServerComponent =
-                    pageType === 'app' &&
-                    staticInfo?.rsc !== RSC_MODULE_TYPES.client
-
-                  if (pageType === 'app' || !isReservedPage(page)) {
-                    try {
-                      let edgeInfo: any
-
-                      if (isEdgeRuntime(pageRuntime)) {
-                        if (pageType === 'app') {
-                          edgeRuntimeAppCount++
-                        } else {
-                          edgeRuntimePagesCount++
-                        }
-
-                        const manifestKey =
-                          pageType === 'pages' ? page : originalAppPath || ''
-
-                        edgeInfo = middlewareManifest.functions[manifestKey]
-                      }
-
-                      let isPageStaticSpan =
-                        checkPageSpan.traceChild('is-page-static')
-                      let workerResult = await isPageStaticSpan.traceAsyncFn(
-                        () => {
-                          return staticWorker.isPageStatic({
-                            dir,
-                            page,
-                            originalAppPath,
-                            distDir,
-                            configFileName,
-                            httpAgentOptions: config.httpAgentOptions,
-                            locales: config.i18n?.locales,
-                            defaultLocale: config.i18n?.defaultLocale,
-                            parentId: isPageStaticSpan.getId(),
-                            pageRuntime,
-                            edgeInfo,
-                            pageType,
-                            cacheComponents: isAppCacheComponentsEnabled,
-                            authInterrupts: isAuthInterruptsEnabled,
-                            cacheHandler: config.cacheHandler,
-                            cacheHandlers: config.cacheHandlers,
-                            isrFlushToDisk: ciEnvironment.hasNextSupport
-                              ? false
-                              : config.experimental.isrFlushToDisk,
-                            cacheMaxMemorySize: config.cacheMaxMemorySize,
-                            nextConfigOutput: config.output,
-                            pprConfig: config.experimental.ppr,
-                            cacheLifeProfiles: config.cacheLife,
-                            buildId,
-                            sriEnabled,
-                          })
-                        }
-                      )
-
-                      if (pageType === 'app' && originalAppPath) {
-                        appNormalizedPaths.set(originalAppPath, page)
-                        // TODO-APP: handle prerendering with edge
-                        if (isEdgeRuntime(pageRuntime)) {
-                          isStatic = false
-                          isSSG = false
-
-                          Log.warnOnce(
-                            `Using edge runtime on a page currently disables static generation for that page`
-                          )
-                        } else {
-                          const isDynamic = isDynamicRoute(page)
-
-                          if (
-                            typeof workerResult.isRoutePPREnabled === 'boolean'
-                          ) {
-                            isRoutePPREnabled = workerResult.isRoutePPREnabled
-                          }
-
-                          // If this route can be partially pre-rendered, then
-                          // mark it as such and mark that it can be
-                          // generated server-side.
-                          if (workerResult.isRoutePPREnabled) {
-                            isSSG = true
-                            isStatic = true
-
-                            staticPaths.set(originalAppPath, [])
-                          }
-
-                          if (workerResult.prerenderedRoutes) {
-                            staticPaths.set(
-                              originalAppPath,
-                              workerResult.prerenderedRoutes
-                            )
-                            ssgPageRoutes = workerResult.prerenderedRoutes.map(
-                              (route) => route.pathname
-                            )
-                            isSSG = true
-                          }
-
-                          const appConfig = workerResult.appConfig || {}
-                          if (appConfig.revalidate !== 0) {
-                            const hasGenerateStaticParams =
-                              workerResult.prerenderedRoutes &&
-                              workerResult.prerenderedRoutes.length > 0
-
-                            if (
-                              config.output === 'export' &&
-                              isDynamic &&
-                              !hasGenerateStaticParams
-                            ) {
-                              throw new Error(
-                                `Page "${page}" is missing "generateStaticParams()" so it cannot be used with "output: export" config.`
-                              )
-                            }
-
-                            // Mark the app as static if:
-                            // - It has no dynamic param
-                            // - It doesn't have generateStaticParams but `dynamic` is set to
-                            //   `error` or `force-static`
-                            if (!isDynamic) {
-                              staticPaths.set(originalAppPath, [
-                                {
-                                  params: {},
-                                  pathname: page,
-                                  encodedPathname: page,
-                                  fallbackRouteParams: [],
-                                  fallbackMode:
-                                    workerResult.prerenderFallbackMode,
-                                  fallbackRootParams: [],
-                                  throwOnEmptyStaticShell: true,
-                                },
-                              ])
-                              isStatic = true
-                            } else if (
-                              !hasGenerateStaticParams &&
-                              (appConfig.dynamic === 'error' ||
-                                appConfig.dynamic === 'force-static')
-                            ) {
-                              staticPaths.set(originalAppPath, [])
-                              isStatic = true
-                              isRoutePPREnabled = false
-                            }
-                          }
-
-                          if (workerResult.prerenderFallbackMode) {
-                            fallbackModes.set(
-                              originalAppPath,
-                              workerResult.prerenderFallbackMode
-                            )
-                          }
-
-                          appDefaultConfigs.set(originalAppPath, appConfig)
-                        }
-                      } else {
-                        if (isEdgeRuntime(pageRuntime)) {
-                          if (workerResult.hasStaticProps) {
-                            console.warn(
-                              `"getStaticProps" is not yet supported fully with "experimental-edge", detected on ${page}`
-                            )
-                          }
-                          workerResult.isStatic = false
-                          workerResult.hasStaticProps = false
-                        }
-
-                        if (workerResult.isNextImageImported) {
-                          isNextImageImported = true
-                        }
-
-                        if (workerResult.hasStaticProps) {
-                          ssgPages.add(page)
-                          isSSG = true
-
-                          if (
-                            workerResult.prerenderedRoutes &&
-                            workerResult.prerenderedRoutes.length > 0
-                          ) {
-                            additionalPaths.set(
-                              page,
-                              workerResult.prerenderedRoutes
-                            )
-                            ssgPageRoutes = workerResult.prerenderedRoutes.map(
-                              (route) => route.pathname
-                            )
-                          }
-
-                          if (
-                            workerResult.prerenderFallbackMode ===
-                            FallbackMode.BLOCKING_STATIC_RENDER
-                          ) {
-                            ssgBlockingFallbackPages.add(page)
-                          } else if (
-                            workerResult.prerenderFallbackMode ===
-                            FallbackMode.PRERENDER
-                          ) {
-                            ssgStaticFallbackPages.add(page)
-                          }
-                        } else if (workerResult.hasServerProps) {
-                          serverPropsPages.add(page)
-                        } else if (
-                          workerResult.isStatic &&
-                          !isServerComponent &&
-                          (await customAppGetInitialPropsPromise) === false
-                        ) {
-                          staticPages.add(page)
-                          isStatic = true
-                        } else if (isServerComponent) {
-                          // This is a static server component page that doesn't have
-                          // gSP or gSSP. We still treat it as a SSG page.
-                          ssgPages.add(page)
-                          isSSG = true
-                        }
-
-                        if (hasPages404 && page === '/404') {
-                          if (
-                            !workerResult.isStatic &&
-                            !workerResult.hasStaticProps
-                          ) {
-                            throw new Error(
-                              `\`pages/404\` ${STATIC_STATUS_PAGE_GET_INITIAL_PROPS_ERROR}`
-                            )
-                          }
-                          // we need to ensure the 404 lambda is present since we use
-                          // it when _app has getInitialProps
-                          if (
-                            (await customAppGetInitialPropsPromise) &&
-                            !workerResult.hasStaticProps
-                          ) {
-                            staticPages.delete(page)
-                          }
-                        }
-
-                        if (
-                          STATIC_STATUS_PAGES.includes(page) &&
-                          !workerResult.isStatic &&
-                          !workerResult.hasStaticProps
-                        ) {
-                          throw new Error(
-                            `\`pages${page}\` ${STATIC_STATUS_PAGE_GET_INITIAL_PROPS_ERROR}`
-                          )
-                        }
-                      }
-                    } catch (err) {
-                      if (
-                        !isError(err) ||
-                        err.message !== 'INVALID_DEFAULT_EXPORT'
-                      )
-                        throw err
-                      invalidPages.add(page)
-                    }
-                  }
-
-                  if (pageType === 'app') {
-                    if (isSSG || isStatic) {
-                      staticAppPagesCount++
-                    } else {
-                      serverAppPagesCount++
-                    }
-                  }
-                }
-
-                pageInfos.set(page, {
-                  originalAppPath,
-                  isStatic,
-                  isSSG,
-                  isRoutePPREnabled,
-                  ssgPageRoutes,
-                  initialCacheControl: undefined,
-                  runtime: pageRuntime,
-                  pageDuration: undefined,
-                  ssgPageDurations: undefined,
-                  hasEmptyStaticShell: undefined,
-                })
-              })
-            })
-        )
-
-        const errorPageResult = await errorPageStaticResult
-        const nonStaticErrorPage =
-          (await errorPageHasCustomGetInitialProps) ||
-          (errorPageResult && errorPageResult.hasServerProps)
-
-        const returnValue = {
-          customAppGetInitialProps: await customAppGetInitialPropsPromise,
-          namedExports: await namedExportsPromise,
-          isNextImageImported,
-          hasNonStaticErrorPage: nonStaticErrorPage,
-        }
-
-        return returnValue
-      })
+        counters: {
+          staticAppPagesCount,
+          serverAppPagesCount,
+          edgeRuntimeAppCount,
+          edgeRuntimePagesCount,
+        },
+      } = await staticCheckSpan.traceAsyncFn(() =>
+        analyzePages({
+          staticCheckSpan,
+          staticWorker,
+          isCompileMode,
+          config,
+          distDir,
+          dir,
+          hasCustomErrorPage,
+          hasUserPagesRoutes,
+          hasPages404,
+          pageKeys,
+          mappedAppPages,
+          appPathRoutes,
+          pagesDir,
+          appDir,
+          pagesPaths,
+          buildId,
+          isAppCacheComponentsEnabled,
+          isAuthInterruptsEnabled,
+        })
+      )
 
       if (postCompileSpinner) {
         const collectingPageDataEnd = process.hrtime(collectingPageDataStart)
@@ -4229,13 +3730,6 @@ export default async function build(
       })
     }
   }
-}
-
-function errorFromUnsupportedSegmentConfig(): never {
-  Log.error(
-    `Invalid segment configuration export detected. This can cause unexpected behavior from the configs not being applied. You should see the relevant failures in the logs above. Please fix them to continue.`
-  )
-  process.exit(1)
 }
 
 function getBundlerForTelemetry(bundler: Bundler) {
