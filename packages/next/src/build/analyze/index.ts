@@ -9,14 +9,8 @@ import { PHASE_ANALYZE } from '../../shared/lib/constants'
 import { turbopackAnalyze, type AnalyzeContext } from '../turbopack-analyze'
 import { durationToString } from '../duration-to-string'
 import { cp, writeFile, mkdir } from 'node:fs/promises'
-import {
-  collectAppFiles,
-  collectPagesFiles,
-  createPagesMapping,
-} from '../entries'
-import { createValidFileMatcher } from '../../server/lib/find-page-file'
+import { discoverRoutes } from '../route-discovery'
 import { findPagesDir } from '../../lib/find-pages-dir'
-import { PAGE_TYPES } from '../../lib/page-types'
 import loadCustomRoutes from '../../lib/load-custom-routes'
 import { generateRoutesManifest } from '../generate-routes-manifest'
 import { checkIsAppPPREnabled } from '../../server/lib/experimental/ppr'
@@ -79,7 +73,7 @@ export default async function analyze({
 
     await shutdownPromise
 
-    const routes = await collectRoutesForAnalyze(dir, config, appDirOnly)
+    const routes = await collectRoutesForAnalyze(dir, config)
 
     await cp(path.join(__dirname, '../../bundle-analyzer'), analyzeDir, {
       recursive: true,
@@ -127,11 +121,9 @@ export default async function analyze({
  */
 async function collectRoutesForAnalyze(
   dir: string,
-  config: NextConfigComplete,
-  appDirOnly: boolean
+  config: NextConfigComplete
 ): Promise<string[]> {
   const { pagesDir, appDir } = findPagesDir(dir)
-  const validFileMatcher = createValidFileMatcher(config.pageExtensions, appDir)
 
   let appType: RoutesManifest['appType']
   if (pagesDir && appDir) {
@@ -144,39 +136,21 @@ async function collectRoutesForAnalyze(
     throw new Error('No pages or app directory found.')
   }
 
-  const { appPaths } = appDir
-    ? await collectAppFiles(appDir, validFileMatcher)
-    : { appPaths: [] }
-  const pagesPaths = pagesDir
-    ? await collectPagesFiles(pagesDir, validFileMatcher)
-    : null
-
-  const appMapping = await createPagesMapping({
-    pagePaths: appPaths,
-    isDev: false,
-    pagesType: PAGE_TYPES.APP,
-    pageExtensions: config.pageExtensions,
-    pagesDir,
+  const discovery = await discoverRoutes({
     appDir,
-    appDirOnly,
+    pagesDir,
+    pageExtensions: config.pageExtensions,
+    isDev: false,
+    baseDir: dir,
+    isSrcDir: path.relative(dir, pagesDir || appDir || '').startsWith('src'),
   })
 
-  const pagesMapping = pagesPaths
-    ? await createPagesMapping({
-        pagePaths: pagesPaths,
-        isDev: false,
-        pagesType: PAGE_TYPES.PAGES,
-        pageExtensions: config.pageExtensions,
-        pagesDir,
-        appDir,
-        appDirOnly,
-      })
-    : null
-
   const pageKeys = {
-    pages: pagesMapping ? Object.keys(pagesMapping) : [],
-    app: appMapping
-      ? Object.keys(appMapping).map((key) => normalizeAppPath(key))
+    pages: Object.keys(discovery.mappedPages || {}),
+    app: discovery.mappedAppPages
+      ? Object.keys(discovery.mappedAppPages).map((key) =>
+          normalizeAppPath(key)
+        )
       : undefined,
   }
 
