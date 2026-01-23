@@ -1384,6 +1384,7 @@ export default async function build(
             redirects: config.redirects,
             rewrites: config.rewrites,
             validatorFilePath,
+            pageExtensions: config.pageExtensions,
           })
 
           await writeRouteTypesManifest(

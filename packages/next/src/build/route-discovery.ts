@@ -7,15 +7,7 @@ import {
   ROOT_DIR_ALIAS,
 } from '../lib/constants'
 import { normalizePathSep } from '../shared/lib/page-path/normalize-path-sep'
-import { normalizeAppPath } from '../shared/lib/router/utils/app-paths'
-import { ensureLeadingSlash } from '../shared/lib/page-path/ensure-leading-slash'
 import { PAGE_TYPES } from '../lib/page-types'
-import {
-  extractSlotsFromRoutes,
-  combineSlots,
-  type SlotInfo,
-  type RouteInfo,
-} from './file-classifier'
 import {
   normalizeMetadataRoute,
   normalizeMetadataPageToRoute,
@@ -29,20 +21,15 @@ import {
   UNDERSCORE_GLOBAL_ERROR_ROUTE_ENTRY,
 } from '../shared/lib/entry-constants'
 import { isReservedPage } from './utils'
+import {
+  parsePath,
+  extractSlotsFromRoutes,
+  combineSlots,
+  type SlotInfo,
+  type RouteInfo,
+} from './path-parser'
 import type { PageExtensions } from './page-extensions-type'
 import type { MappedPages } from './build-context'
-
-/** Normalize a route for the app router */
-function normalizeAppRoute(pageName: string): string {
-  return normalizeAppPath(normalizePathSep(pageName))
-}
-
-/** Normalize a layout route (strip /layout suffix) */
-function normalizeLayoutRoute(pageName: string): string {
-  return ensureLeadingSlash(
-    normalizeAppPath(normalizePathSep(pageName)).replace(/\/layout$/, '')
-  )
-}
 
 /**
  * For a given page path removes the provided extensions.
@@ -131,7 +118,8 @@ export function createRelativeFilePath(
 export function processPageRoutes(
   mappedPages: { [page: string]: string },
   baseDir: string,
-  isSrcDir: boolean
+  isSrcDir: boolean,
+  pageExtensions: PageExtensions
 ): {
   pageRoutes: RouteInfo[]
   pageApiRoutes: RouteInfo[]
@@ -147,16 +135,19 @@ export function processPageRoutes(
       isSrcDir
     )
 
+    // Use parsePath to normalize - it handles path separators
+    const parsed = parsePath(route, { pageExtensions })
+
     if (route.startsWith('/api/')) {
       pageApiRoutes.push({
-        route: normalizePathSep(route),
+        route: parsed.normalized,
         filePath: relativeFilePath,
       })
     } else {
       if (isReservedPage(route)) continue
 
       pageRoutes.push({
-        route: normalizePathSep(route),
+        route: parsed.normalized,
         filePath: relativeFilePath,
       })
     }
@@ -172,7 +163,8 @@ export function processAppRoutes(
   mappedAppPages: { [page: string]: string },
   validFileMatcher: ReturnType<typeof createValidFileMatcher>,
   baseDir: string,
-  isSrcDir: boolean
+  isSrcDir: boolean,
+  pageExtensions: PageExtensions
 ): {
   appRoutes: RouteInfo[]
   appRouteHandlers: RouteInfo[]
@@ -194,7 +186,10 @@ export function processAppRoutes(
       'app',
       isSrcDir
     )
-    const route = normalizeAppRoute(page)
+
+    // Use parsePath for normalization
+    const parsed = parsePath(page, { pageExtensions })
+    const route = parsed.normalized
 
     if (validFileMatcher.isAppRouterRoute(filePath)) {
       appRouteHandlers.push({ route, filePath: relativeFilePath })
@@ -212,12 +207,17 @@ export function processAppRoutes(
 export function processLayoutRoutes(
   mappedAppLayouts: { [page: string]: string },
   baseDir: string,
-  isSrcDir: boolean
+  isSrcDir: boolean,
+  pageExtensions: PageExtensions
 ): RouteInfo[] {
-  return Object.entries(mappedAppLayouts).map(([route, filePath]) => ({
-    route: normalizeLayoutRoute(route),
-    filePath: createRelativeFilePath(baseDir, filePath, 'app', isSrcDir),
-  }))
+  return Object.entries(mappedAppLayouts).map(([route, filePath]) => {
+    // Use parsePath for normalization - it handles layout suffix removal
+    const parsed = parsePath(route, { pageExtensions })
+    return {
+      route: parsed.normalized,
+      filePath: createRelativeFilePath(baseDir, filePath, 'app', isSrcDir),
+    }
+  })
 }
 
 /**
@@ -406,7 +406,8 @@ export async function discoverRoutes(
     ;({ pageRoutes, pageApiRoutes } = processPageRoutes(
       mappedPages,
       baseDir,
-      !!isSrcDir
+      !!isSrcDir,
+      pageExtensions
     ))
   }
 
@@ -436,8 +437,8 @@ export async function discoverRoutes(
       UNDERSCORE_GLOBAL_ERROR_ROUTE_ENTRY,
     ])
     slots = combineSlots(
-      extractSlotsFromRoutes(mappedAppPages, SKIP_ROUTES),
-      extractSlotsFromRoutes(mappedDefaultFiles)
+      extractSlotsFromRoutes(mappedAppPages, SKIP_ROUTES, pageExtensions),
+      extractSlotsFromRoutes(mappedDefaultFiles, undefined, pageExtensions)
     )
 
     // Process routes
@@ -445,9 +446,15 @@ export async function discoverRoutes(
       mappedAppPages,
       validFileMatcher,
       baseDir,
-      !!isSrcDir
+      !!isSrcDir,
+      pageExtensions
     ))
-    layoutRoutes = processLayoutRoutes(mappedAppLayouts, baseDir, !!isSrcDir)
+    layoutRoutes = processLayoutRoutes(
+      mappedAppLayouts,
+      baseDir,
+      !!isSrcDir,
+      pageExtensions
+    )
   }
 
   return {

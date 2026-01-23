@@ -43,7 +43,7 @@ import {
 } from './utils'
 import { normalizePagePath } from '../shared/lib/page-path/normalize-page-path'
 import type { ServerRuntime } from '../types'
-import { normalizeAppPath } from '../shared/lib/router/utils/app-paths'
+import { parsePath } from './path-parser'
 import { encodeMatchers } from './webpack/loaders/next-middleware-loader'
 import type { EdgeFunctionLoaderOptions } from './webpack/loaders/next-edge-function-loader'
 import { isAppRouteRoute } from '../lib/is-app-route-route'
@@ -357,7 +357,9 @@ export async function createEntrypoints(
   let appPathsPerRoute: Record<string, string[]> = {}
   if (appDir && appPaths) {
     for (const pathname in appPaths) {
-      const normalizedPath = normalizeAppPath(pathname)
+      // Use parsePath for normalization
+      const parsed = parsePath(pathname, { pageExtensions })
+      const normalizedPath = parsed.normalized
       const actualPath = appPaths[pathname]
       if (!appPathsPerRoute[normalizedPath]) {
         appPathsPerRoute[normalizedPath] = []
@@ -399,10 +401,17 @@ export async function createEntrypoints(
         rootDir,
       })
 
-      const isInsideAppDir =
-        !!appDir &&
-        (absolutePagePath.startsWith(APP_DIR_ALIAS) ||
-          absolutePagePath.startsWith(appDir))
+      // Parse the absolute path to determine directory and get normalized route
+      const absolutePathParsed = parsePath(absolutePagePath, {
+        pageExtensions,
+        appDir,
+        pagesDir,
+        rootDir,
+        isAbsolutePath: true,
+      })
+      const isInsideAppDir = absolutePathParsed.directory === 'app'
+      // Use the normalized route from the parsed absolute path for lookups
+      const normalizedRoute = absolutePathParsed.normalized
 
       const staticInfo: PageStaticInfo = await getStaticInfoIncludingLayouts({
         isInsideAppDir,
@@ -444,7 +453,7 @@ export async function createEntrypoints(
         },
         onServer: () => {
           if (pagesType === 'app' && appDir) {
-            const matchedAppPaths = appPathsPerRoute[normalizeAppPath(page)]
+            const matchedAppPaths = appPathsPerRoute[normalizedRoute]
             server[serverBundlePath] = getAppEntry({
               page,
               name: serverBundlePath,
@@ -523,7 +532,7 @@ export async function createEntrypoints(
               })
           } else {
             if (pagesType === 'app') {
-              const matchedAppPaths = appPathsPerRoute[normalizeAppPath(page)]
+              const matchedAppPaths = appPathsPerRoute[normalizedRoute]
               appDirLoader = getAppEntry({
                 name: serverBundlePath,
                 page,

@@ -98,6 +98,7 @@ const nextTypegen = async (
     redirects: nextConfig.redirects,
     rewrites: nextConfig.rewrites,
     validatorFilePath,
+    pageExtensions: nextConfig.pageExtensions,
   })
 
   await writeRouteTypesManifest(

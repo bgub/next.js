@@ -1,8 +1,5 @@
 import path from 'path'
-import {
-  getRouteRegex,
-  type Group,
-} from '../../../shared/lib/router/utils/route-regex'
+import type { Group } from '../../../shared/lib/router/utils/route-regex'
 import type { NextConfigComplete } from '../../config-shared'
 
 import fs from 'fs'
@@ -14,16 +11,18 @@ import {
   generateRouteTypesFileStrict,
 } from './typegen'
 import { tryToParsePath } from '../../../lib/try-to-parse-path'
-import {
-  extractInterceptionRouteInformation,
-  isInterceptionRouteAppPath,
-} from '../../../shared/lib/router/utils/interception-routes'
+import { extractInterceptionRouteInformation } from '../../../shared/lib/router/utils/interception-routes'
 import {
   UNDERSCORE_GLOBAL_ERROR_ROUTE,
   UNDERSCORE_NOT_FOUND_ROUTE,
 } from '../../../shared/lib/entry-constants'
 import { normalizePathSep } from '../../../shared/lib/page-path/normalize-path-sep'
-import type { RouteInfo, SlotInfo } from '../../../build/file-classifier'
+import {
+  parsePath,
+  type RouteInfo,
+  type SlotInfo,
+} from '../../../build/path-parser'
+import type { PageExtensions } from '../../../build/page-extensions-type'
 
 // Internal route info with extracted params for the manifest
 interface ManifestRouteInfo {
@@ -123,19 +122,29 @@ export function convertCustomRouteSource(source: string): string[] {
 /**
  * Extracts route parameters from a route pattern
  */
-export function extractRouteParams(route: string) {
-  const regex = getRouteRegex(route)
-  return regex.groups
+export function extractRouteParams(
+  route: string,
+  pageExtensions: PageExtensions
+) {
+  // Use parsePath to get route regex - it handles all path normalization
+  const parsed = parsePath(route, { pageExtensions })
+  return parsed.regex().groups
 }
 
 /**
  * Resolves an intercepting route to its canonical equivalent
  * Example: /gallery/test/(..)photo/[id] -> /gallery/photo/[id]
  */
-function resolveInterceptingRoute(route: string): string {
-  // Reuse centralized interception route normalization logic
+function resolveInterceptingRoute(
+  route: string,
+  pageExtensions: PageExtensions
+): string {
+  // Use parsePath to detect interception routes
+  const parsed = parsePath(route, { pageExtensions })
+  if (!parsed.isInterceptionRoute) return route
+
+  // Extract the intercepted route using the existing utility
   try {
-    if (!isInterceptionRouteAppPath(route)) return route
     const { interceptedRoute } = extractInterceptionRouteInformation(route)
     return interceptedRoute
   } catch {
@@ -159,6 +168,7 @@ export async function createRouteTypesManifest({
   redirects,
   rewrites,
   validatorFilePath,
+  pageExtensions,
 }: {
   dir: string
   pageRoutes: RouteInfo[]
@@ -170,6 +180,7 @@ export async function createRouteTypesManifest({
   redirects?: NextConfigComplete['redirects']
   rewrites?: NextConfigComplete['rewrites']
   validatorFilePath?: string
+  pageExtensions: PageExtensions
 }): Promise<RouteTypesManifest> {
   // Helper function to calculate the correct relative path
   const getRelativePath = (filePath: string) => {
@@ -208,24 +219,24 @@ export async function createRouteTypesManifest({
     filePathToRoute: new Map([
       ...appRoutes.map(
         ({ route, filePath }) =>
-          [getRelativePath(filePath), resolveInterceptingRoute(route)] as [
-            string,
-            string,
-          ]
+          [
+            getRelativePath(filePath),
+            resolveInterceptingRoute(route, pageExtensions),
+          ] as [string, string]
       ),
       ...layoutRoutes.map(
         ({ route, filePath }) =>
-          [getRelativePath(filePath), resolveInterceptingRoute(route)] as [
-            string,
-            string,
-          ]
+          [
+            getRelativePath(filePath),
+            resolveInterceptingRoute(route, pageExtensions),
+          ] as [string, string]
       ),
       ...appRouteHandlers.map(
         ({ route, filePath }) =>
-          [getRelativePath(filePath), resolveInterceptingRoute(route)] as [
-            string,
-            string,
-          ]
+          [
+            getRelativePath(filePath),
+            resolveInterceptingRoute(route, pageExtensions),
+          ] as [string, string]
       ),
       ...pageRoutes.map(
         ({ route, filePath }) =>
@@ -242,7 +253,7 @@ export async function createRouteTypesManifest({
   for (const { route, filePath } of pageRoutes) {
     manifest.pageRoutes[route] = {
       path: getRelativePath(filePath),
-      groups: extractRouteParams(route),
+      groups: extractRouteParams(route, pageExtensions),
     }
   }
 
@@ -254,11 +265,11 @@ export async function createRouteTypesManifest({
     )
       continue
     // Use the resolved route (for interception routes, this gives us the canonical route)
-    const resolvedRoute = resolveInterceptingRoute(route)
+    const resolvedRoute = resolveInterceptingRoute(route, pageExtensions)
     if (!manifest.layoutRoutes[resolvedRoute]) {
       manifest.layoutRoutes[resolvedRoute] = {
         path: getRelativePath(filePath),
-        groups: extractRouteParams(resolvedRoute),
+        groups: extractRouteParams(resolvedRoute, pageExtensions),
         slots: [],
       }
     }
@@ -278,23 +289,23 @@ export async function createRouteTypesManifest({
       route === UNDERSCORE_NOT_FOUND_ROUTE
     )
       continue
-    // Don't include metadata routes or pages
-    if (
-      !filePath.endsWith('page.ts') &&
-      !filePath.endsWith('page.tsx') &&
-      !filePath.endsWith('.mdx') &&
-      !filePath.endsWith('.md')
-    ) {
+
+    // Use parsePath to determine if this is a page file
+    // Only include app-page types (page.tsx) and markdown files
+    const parsed = parsePath(filePath, { pageExtensions })
+    const isPageFile = parsed.type === 'app-page'
+    const isMarkdownFile = filePath.endsWith('.mdx') || filePath.endsWith('.md')
+    if (!isPageFile && !isMarkdownFile) {
       continue
     }
 
     // Use the resolved route (for interception routes, this gives us the canonical route)
-    const resolvedRoute = resolveInterceptingRoute(route)
+    const resolvedRoute = resolveInterceptingRoute(route, pageExtensions)
 
     if (!manifest.appRoutes[resolvedRoute]) {
       manifest.appRoutes[resolvedRoute] = {
         path: getRelativePath(filePath),
-        groups: extractRouteParams(resolvedRoute),
+        groups: extractRouteParams(resolvedRoute, pageExtensions),
       }
     }
   }
@@ -302,12 +313,12 @@ export async function createRouteTypesManifest({
   // Process app route handlers
   for (const { route, filePath } of appRouteHandlers) {
     // Use the resolved route (for interception routes, this gives us the canonical route)
-    const resolvedRoute = resolveInterceptingRoute(route)
+    const resolvedRoute = resolveInterceptingRoute(route, pageExtensions)
 
     if (!manifest.appRouteHandlerRoutes[resolvedRoute]) {
       manifest.appRouteHandlerRoutes[resolvedRoute] = {
         path: getRelativePath(filePath),
-        groups: extractRouteParams(resolvedRoute),
+        groups: extractRouteParams(resolvedRoute, pageExtensions),
       }
     }
   }
@@ -321,7 +332,7 @@ export async function createRouteTypesManifest({
       for (const route of possibleRoutes) {
         manifest.redirectRoutes[route] = {
           path: route,
-          groups: extractRouteParams(route),
+          groups: extractRouteParams(route, pageExtensions),
         }
       }
     }
@@ -344,7 +355,7 @@ export async function createRouteTypesManifest({
       for (const route of possibleRoutes) {
         manifest.rewriteRoutes[route] = {
           path: route,
-          groups: extractRouteParams(route),
+          groups: extractRouteParams(route, pageExtensions),
         }
       }
     }

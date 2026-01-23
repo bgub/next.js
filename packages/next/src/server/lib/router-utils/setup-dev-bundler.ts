@@ -31,7 +31,6 @@ import { verifyPartytownSetup } from '../../../lib/verify-partytown-setup'
 import { getNamedRouteRegex } from '../../../shared/lib/router/utils/route-regex'
 import { buildDataRoute } from './build-data-route'
 import { getRouteMatcher } from '../../../shared/lib/router/utils/route-matcher'
-import { normalizePathSep } from '../../../shared/lib/page-path/normalize-path-sep'
 import { createClientRouterFilter } from '../../../lib/create-client-router-filter'
 import { absolutePathToPage } from '../../../shared/lib/page-path/absolute-path-to-page'
 import { generateInterceptionRoutesRewrites } from '../../../lib/generate-interception-routes-rewrites'
@@ -91,12 +90,12 @@ import {
 } from './route-types-utils'
 import { writeCacheLifeTypes } from './cache-life-type-utils'
 import {
+  parsePath,
+  isIgnoredPath,
   addSlotIfNew,
   type RouteInfo,
   type SlotInfo,
-} from '../../../build/file-classifier'
-import { normalizeAppPath } from '../../../shared/lib/router/utils/app-paths'
-import { ensureLeadingSlash } from '../../../shared/lib/page-path/ensure-leading-slash'
+} from '../../../build/path-parser'
 import { Lockfile } from '../../../build/lockfile'
 import { deobfuscateText } from '../../../shared/lib/magic-identifier'
 
@@ -512,18 +511,16 @@ async function startWatcher(
           continue
         }
 
-        const isAppPath = Boolean(
-          appDir &&
-            normalizePathSep(fileName).startsWith(
-              normalizePathSep(appDir) + '/'
-            )
-        )
-        const isPagePath = Boolean(
-          pagesDir &&
-            normalizePathSep(fileName).startsWith(
-              normalizePathSep(pagesDir) + '/'
-            )
-        )
+        // Use parsePath to detect which directory the file belongs to
+        const fileParsed = parsePath(fileName, {
+          pageExtensions: nextConfig.pageExtensions,
+          appDir,
+          pagesDir,
+          rootDir: dir,
+          isAbsolutePath: true,
+        })
+        const isAppPath = fileParsed.directory === 'app'
+        const isPagePath = fileParsed.directory === 'pages'
 
         const rootFile = absolutePathToPage(fileName, {
           dir: dir,
@@ -635,20 +632,25 @@ async function startWatcher(
             continue
           }
 
-          const normalizedPageName = normalizePathSep(pageName)
+          // Use parsePath for the page name to get normalized route and metadata
+          const pageNameParsed = parsePath(pageName, {
+            pageExtensions: nextConfig.pageExtensions,
+          })
+          const normalizedPageName = pageNameParsed.raw
 
           // Skip files/directories starting with `_` in the app directory
-          if (normalizedPageName.includes('/_')) continue
+          if (isIgnoredPath(pageNameParsed)) continue
 
           // Record parallel route slots
-          addSlotIfNew(slots, normalizedPageName)
+          addSlotIfNew(slots, normalizedPageName, nextConfig.pageExtensions)
 
           // Handle layouts separately - they don't get added to appPaths
           if (validFileMatcher.isAppLayoutPage(fileName)) {
-            const layoutRoute = ensureLeadingSlash(
-              normalizeAppPath(normalizedPageName).replace(/\/layout$/, '')
-            )
-            layoutRoutes.push({ route: layoutRoute, filePath: fileName })
+            // parsePath handles layout suffix removal in normalized
+            layoutRoutes.push({
+              route: pageNameParsed.normalized,
+              filePath: fileName,
+            })
             continue
           }
 
@@ -656,8 +658,9 @@ async function startWatcher(
           if (!validFileMatcher.isAppRouterPage(fileName)) continue
 
           const originalPageName = pageName
-          pageName = normalizeAppPath(pageName).replace(/%5F/g, '_')
-          const appRoute = normalizePathSep(pageName)
+          // Use parsePath for normalization - it handles groups, parallel routes, and page/route suffixes
+          pageName = pageNameParsed.normalized.replace(/%5F/g, '_')
+          const appRoute = pageName
 
           if (!appPaths[pageName]) {
             appPaths[pageName] = []
@@ -699,7 +702,11 @@ async function startWatcher(
             opts.fsChecker.nextDataRoutes.add(pageName)
           }
 
-          const route = normalizePathSep(pageName)
+          // For pages router, use parsePath to get normalized route
+          const pagesRouteParsed = parsePath(pageName, {
+            pageExtensions: nextConfig.pageExtensions,
+          })
+          const route = pagesRouteParsed.normalized
           const routeEntry = { route, filePath: fileName }
           if (pageName.startsWith('/api/')) {
             pageApiRoutes.push(routeEntry)
@@ -1160,6 +1167,7 @@ async function startWatcher(
             validatorFilePath,
             appRouteHandlers,
             pageApiRoutes,
+            pageExtensions: nextConfig.pageExtensions,
           })
 
           await writeRouteTypesManifest(
