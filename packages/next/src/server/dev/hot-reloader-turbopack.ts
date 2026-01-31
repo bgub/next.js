@@ -121,7 +121,7 @@ import { handleErrorStateResponse } from '../mcp/tools/get-errors'
 import { handlePageMetadataResponse } from '../mcp/tools/get-page-metadata'
 import { setStackFrameResolver } from '../mcp/tools/utils/format-errors'
 import { recordMcpTelemetry } from '../mcp/mcp-telemetry-tracker'
-import { initLogStream, FileSink } from './log-stream'
+import { initLogStream, FileSink, TuiSink } from './log-stream'
 import type { ServerCacheStatus } from '../../next-devtools/dev-overlay/cache-indicator'
 import type { Lockfile } from '../../build/lockfile'
 import {
@@ -224,10 +224,16 @@ export async function createHotReloaderTurbopack(
   hotReloaderSpan.stop()
 
   // Initialize structured logging
+  const tuiEnabled = !!process.env.__NEXT_TUI_ENABLED
   const logStream = initLogStream(1000)
 
   // Always add file sink in dev mode for log file support
   logStream.addSink(new FileSink(join(distDir, 'logs', 'next-development.log')))
+
+  // Add TUI sink if TUI is enabled
+  if (tuiEnabled) {
+    logStream.addSink(new TuiSink())
+  }
 
   const encryptionKey = await generateEncryptionKeyBase64({
     isBuild: false,
