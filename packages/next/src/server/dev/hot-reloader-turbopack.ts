@@ -99,10 +99,7 @@ import { getDisableDevIndicatorMiddleware } from '../../next-devtools/server/dev
 import { getRestartDevServerMiddleware } from '../../next-devtools/server/restart-dev-server-middleware'
 import { backgroundLogCompilationEvents } from '../../shared/lib/turbopack/compilation-events'
 import { getSupportedBrowsers, printBuildErrors } from '../../build/utils'
-import {
-  receiveBrowserLogsTurbopack,
-  handleClientFileLogs,
-} from './browser-logs/receive-logs'
+import { receiveBrowserLogsTurbopack } from './browser-logs/receive-logs'
 import { normalizePath } from '../../lib/normalize-path'
 import {
   devToolsConfigMiddleware,
@@ -124,7 +121,7 @@ import { handleErrorStateResponse } from '../mcp/tools/get-errors'
 import { handlePageMetadataResponse } from '../mcp/tools/get-page-metadata'
 import { setStackFrameResolver } from '../mcp/tools/utils/format-errors'
 import { recordMcpTelemetry } from '../mcp/mcp-telemetry-tracker'
-import { getFileLogger } from './browser-logs/file-logger'
+import { initLogStream, FileSink } from './log-stream'
 import type { ServerCacheStatus } from '../../next-devtools/dev-overlay/cache-indicator'
 import type { Lockfile } from '../../build/lockfile'
 import {
@@ -226,11 +223,11 @@ export async function createHotReloaderTurbopack(
   // of the current `next dev` invocation.
   hotReloaderSpan.stop()
 
-  // Initialize log monitor for file logging
-  // Enable logging by default in development mode
-  const mcpServerEnabled = !!nextConfig.experimental.mcpServer
-  const fileLogger = getFileLogger()
-  fileLogger.initialize(distDir, mcpServerEnabled)
+  // Initialize structured logging
+  const logStream = initLogStream(1000)
+
+  // Always add file sink in dev mode for log file support
+  logStream.addSink(new FileSink(join(distDir, 'logs', 'next-development.log')))
 
   const encryptionKey = await generateEncryptionKeyBase64({
     isBuild: false,
@@ -298,6 +295,7 @@ export async function createHotReloaderTurbopack(
     getSourceMapFromTurbopack.bind(null, project, projectPath)
   )
   opts.onDevServerCleanup?.(async () => {
+    logStream.close()
     setBundlerFindSourceMapImplementation(() => undefined)
     await project.onExit()
     await lockfile?.unlock()
@@ -1078,24 +1076,20 @@ export async function createHotReloaderTurbopack(
               // TODO
               break
             case 'browser-logs': {
-              const browserToTerminalConfig =
-                nextConfig.logging && nextConfig.logging.browserToTerminal
-              if (browserToTerminalConfig) {
-                await receiveBrowserLogsTurbopack({
-                  entries: parsedData.entries,
-                  router: parsedData.router,
-                  sourceType: parsedData.sourceType,
-                  project,
-                  projectPath,
-                  distDir,
-                  config: browserToTerminalConfig,
-                })
-              }
-              break
-            }
-            case 'client-file-logs': {
-              // Always log to file regardless of terminal flag
-              await handleClientFileLogs(parsedData.logs)
+              // Always process for LogStream (TUI/MCP)
+              // Terminal output is gated by config inside handleLog()
+              await receiveBrowserLogsTurbopack({
+                entries: parsedData.entries,
+                router: parsedData.router,
+                sourceType: parsedData.sourceType,
+                project,
+                projectPath,
+                distDir,
+                config:
+                  nextConfig.logging !== false
+                    ? (nextConfig.logging?.browserToTerminal ?? false)
+                    : false,
+              })
               break
             }
             case 'ping': {
