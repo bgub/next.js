@@ -605,11 +605,11 @@ export async function setupFsCheck(opts: {
 
         let matchedItem = items.has(curItemPath)
 
-        // check decoded variant as well
-        if (!matchedItem && !opts.dev) {
+        // check decoded variant as well (e.g. non-ASCII page names)
+        if (!matchedItem) {
           matchedItem = items.has(curDecodedItemPath)
           if (matchedItem) curItemPath = curDecodedItemPath
-          else {
+          else if (!opts.dev) {
             // x-ref: https://github.com/vercel/next.js/issues/54008
             // There're cases that urls get decoded before requests, we should support both encoded and decoded ones.
             // e.g. nginx could decode the proxy urls, the below ones should be treated as the same:
@@ -687,14 +687,17 @@ export async function setupFsCheck(opts: {
             } else if (type === 'pageFile' || type === 'appFile') {
               const isAppFile = type === 'appFile'
 
-              // Attempt to ensure the page/app file is compiled and ready
+              // Attempt to ensure the page/app file is compiled and ready.
+              // Use the decoded path so non-ASCII filenames (e.g. тест.js)
+              // are found on disk instead of the URL-encoded variant.
               if (ensureFn) {
                 const ensureItemPath = isAppFile
-                  ? normalizeMetadataRoute(curItemPath)
-                  : curItemPath
+                  ? normalizeMetadataRoute(curDecodedItemPath)
+                  : curDecodedItemPath
 
                 try {
                   await ensureFn({ type, itemPath: ensureItemPath })
+                  curItemPath = curDecodedItemPath
                 } catch (error) {
                   // If ensure failed, skip this item and continue to the next one
                   continue

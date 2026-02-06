@@ -52,13 +52,37 @@ export class RouteMatcher<D extends RouteDefinition = RouteDefinition> {
   public test(pathname: string): RouteMatchResult | null {
     if (this.dynamic) {
       const params = this.dynamic(pathname)
-      if (!params) return null
+      if (params) return { params }
 
-      return { params }
+      // Try decoding for non-ASCII pathnames (e.g. /%D1%82%D0%B5%D1%81%D1%82 → /тест).
+      // Use decodeURI to preserve reserved characters like %2F.
+      try {
+        const decoded = decodeURI(pathname)
+        if (decoded !== pathname) {
+          const decodedParams = this.dynamic(decoded)
+          if (decodedParams) return { params: decodedParams }
+        }
+      } catch {
+        // Ignore malformed percent-encoded sequences; fall through to no match.
+      }
+
+      return null
     }
 
     if (pathname === this.definition.pathname) {
       return {}
+    }
+
+    // Try decoding for non-ASCII pathnames (e.g. /%D1%82%D0%B5%D1%81%D1%82 → /тест).
+    // Use decodeURIComponent (not decodeURI) here because static paths are
+    // compared as a whole string — there's no risk of unescaping path separators
+    // within a segment.
+    try {
+      if (decodeURIComponent(pathname) === this.definition.pathname) {
+        return {}
+      }
+    } catch {
+      // Ignore malformed percent-encoded sequences; fall through to no match.
     }
 
     return null
