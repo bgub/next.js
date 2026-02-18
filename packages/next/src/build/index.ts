@@ -218,6 +218,7 @@ import {
   writeRouteTypesManifest,
   writeValidatorFile,
   writeRouteTypesEntryFile,
+  writeCacheLifeTypesFile,
 } from '../server/lib/router-utils/route-types-utils'
 import { Lockfile } from './lockfile'
 import {
@@ -1406,6 +1407,20 @@ export default async function build(
             strictRouteTypes: Boolean(config.experimental.strictRouteTypes),
             typedRoutes: Boolean(config.typedRoutes),
           })
+
+          // Generate cache-life types if custom profiles are configured
+          if (config.cacheLife) {
+            routeTypesManifest.cacheLifeConfig = config.cacheLife
+            const cacheLifeTypesFilePath = path.join(
+              distDir,
+              'types',
+              'cache-life.d.ts'
+            )
+            await writeCacheLifeTypesFile(
+              routeTypesManifest,
+              cacheLifeTypesFilePath
+            )
+          }
         })
 
       // Turbopack already handles conflicting app and page routes.

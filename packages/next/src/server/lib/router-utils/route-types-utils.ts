@@ -13,6 +13,7 @@ import {
   generateValidatorFileStrict,
   generateRouteTypesFileStrict,
 } from './typegen'
+import { writeCacheLifeTypes } from './cache-life-type-utils'
 import { tryToParsePath } from '../../../lib/try-to-parse-path'
 import {
   extractInterceptionRouteInformation,
@@ -24,6 +25,7 @@ import {
 } from '../../../shared/lib/entry-constants'
 import { normalizePathSep } from '../../../shared/lib/page-path/normalize-path-sep'
 import type { RouteInfo, SlotInfo } from '../../../build/file-classifier'
+import type { CacheLife } from '../../use-cache/cache-life'
 
 // Internal route info with extracted params for the manifest
 interface ManifestRouteInfo {
@@ -48,6 +50,8 @@ export interface RouteTypesManifest {
   pageApiRoutes: Set<string>
   /** Direct mapping from file paths to routes for validation */
   filePathToRoute: Map<string, string>
+  /** Cache life configuration for generating cache-life.d.ts */
+  cacheLifeConfig?: { [profile: string]: CacheLife }
 }
 
 // Convert a custom-route source string (`/blog/:slug`, `/docs/:path*`, ...)
@@ -444,4 +448,11 @@ export async function writeRouteTypesEntryFile(
   lines.push('') // trailing newline
 
   await fs.promises.writeFile(entryFilePath, lines.join('\n'))
+}
+
+export async function writeCacheLifeTypesFile(
+  manifest: RouteTypesManifest,
+  filePath: string
+) {
+  writeCacheLifeTypes(manifest.cacheLifeConfig, filePath)
 }

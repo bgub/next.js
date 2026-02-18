@@ -1,4 +1,5 @@
 import type { CacheLife } from '../../use-cache/cache-life'
+import { INFINITE_CACHE } from '../../../lib/constants'
 import fs from 'fs'
 import path from 'path'
 
@@ -52,7 +53,7 @@ function formatTimespanWithSeconds(seconds: undefined | number): string {
   if (seconds === undefined) {
     return 'default'
   }
-  if (seconds >= 0xfffffffe) {
+  if (seconds >= INFINITE_CACHE) {
     return 'never'
   }
   const text = seconds + ' seconds'
@@ -86,7 +87,7 @@ export function generateCacheLifeTypes(cacheLife: {
     if (profile.stale === undefined) {
       description += `
      * This cache may be stale on clients for the default stale time of the scope before checking with the server.`
-    } else if (profile.stale >= 0xfffffffe) {
+    } else if (profile.stale >= INFINITE_CACHE) {
       description += `
      * This cache may be stale on clients indefinitely before checking with the server.`
     } else {
@@ -104,7 +105,7 @@ export function generateCacheLifeTypes(cacheLife: {
       if (profile.revalidate === undefined) {
         description += `
      * It will inherit the default revalidate time of its scope since it does not define its own.`
-      } else if (profile.revalidate >= 0xfffffffe) {
+      } else if (profile.revalidate >= INFINITE_CACHE) {
         // Nothing to mention.
       } else {
         description += `
@@ -113,7 +114,7 @@ export function generateCacheLifeTypes(cacheLife: {
       if (profile.expire === undefined) {
         description += `
      * It will inherit the default expiration time of its scope since it does not define its own.`
-      } else if (profile.expire >= 0xfffffffe) {
+      } else if (profile.expire >= INFINITE_CACHE) {
         description += `
      * It lives for the maximum age of the server cache. If this entry has no traffic for a while, it may serve an old value the next request.`
       } else {
