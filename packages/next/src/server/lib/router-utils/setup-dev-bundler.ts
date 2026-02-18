@@ -191,7 +191,7 @@ async function startWatcher(
   setGlobal('distDir', distDir)
   setGlobal('phase', PHASE_DEVELOPMENT_SERVER)
 
-  let lockfile
+  let lockfile: Lockfile | undefined
   if (opts.nextConfig.experimental.lockDistDir) {
     fs.mkdirSync(distDir, { recursive: true })
 
@@ -357,8 +357,9 @@ async function startWatcher(
 
   let resolved = false
   let prevSortedRoutes: string[] = []
+  let enabledTypeScript = await verifyTypeScript(opts)
 
-  await new Promise<void>(async (resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     if (pagesDir) {
       // Watchpack doesn't emit an event for an empty directory
       fs.readdir(pagesDir, (_, files) => {
@@ -419,7 +420,40 @@ async function startWatcher(
       },
     })
     const fileWatchTimes = new Map()
-    let enabledTypeScript = await verifyTypeScript(opts)
+    const watchFiles = new Set(files)
+    const rootFileCache = new Map<
+      string,
+      { rootFile: string; middlewareMatchers?: ProxyMatcher[] }
+    >()
+    const pageNameCache = new Map<string, string>()
+    type AggregationFileCacheEntry =
+      | { kind: 'skip' }
+      | {
+          kind: 'app'
+          pageName: string
+          originalPageName: string
+          isRootNotFound: boolean
+          isAppLayout: boolean
+          isAppRouterPage: boolean
+          isAppRouterRoute: boolean
+          staticMetadataPath?: string
+          hasNestedMiddleware: boolean
+        }
+      | {
+          kind: 'pages'
+          pageName: string
+          isPagesApiRoute: boolean
+          hasNestedMiddleware: boolean
+        }
+    type AppAggregationEntry = Extract<
+      AggregationFileCacheEntry,
+      { kind: 'app' }
+    >
+    type PagesAggregationEntry = Extract<
+      AggregationFileCacheEntry,
+      { kind: 'pages' }
+    >
+    const aggregationFileCache = new Map<string, AggregationFileCacheEntry>()
     let previousClientRouterFilters: any
     let previousConflictingPagePaths: Set<string> = new Set()
 
@@ -454,6 +488,16 @@ async function startWatcher(
 
       const { appFiles, pageFiles, staticMetadataFiles } = opts.fsChecker
 
+      for (const fileName of fileWatchTimes.keys()) {
+        if (!knownFiles.has(fileName)) {
+          fileWatchTimes.delete(fileName)
+          rootFileCache.delete(fileName)
+          pageNameCache.delete(`app:${fileName}`)
+          pageNameCache.delete(`pages:${fileName}`)
+          aggregationFileCache.delete(fileName)
+        }
+      }
+
       appFiles.clear()
       pageFiles.clear()
       staticMetadataFiles.clear()
@@ -466,9 +510,129 @@ async function startWatcher(
       let proxyFilePath: string | undefined
       let middlewareFilePath: string | undefined
 
+      const applyRouteEntry = (
+        fileName: string,
+        entry: Exclude<AggregationFileCacheEntry, { kind: 'skip' }>
+      ) => {
+        devPageFiles.add(fileName)
+
+        const pageName = entry.pageName
+
+        if (entry.kind === 'app') {
+          if (entry.isRootNotFound) {
+            hasRootAppNotFound = true
+            return
+          }
+
+          addSlotIfNew(slots, pageName)
+
+          if (entry.isAppLayout) {
+            const layoutRoute = ensureLeadingSlash(
+              normalizeAppPath(pageName).replace(/\/layout$/, '')
+            )
+            layoutRoutes.push({ route: layoutRoute, filePath: fileName })
+            return
+          }
+
+          if (!entry.isAppRouterPage) {
+            return
+          }
+
+          if (!appPaths[pageName]) {
+            appPaths[pageName] = []
+          }
+          appPaths[pageName].push(
+            opts.turbo
+              ? entry.originalPageName.replace(/%5F/g, '_')
+              : entry.originalPageName
+          )
+
+          if (useFileSystemPublicRoutes) {
+            if (entry.staticMetadataPath) {
+              staticMetadataFiles.set(entry.staticMetadataPath, fileName)
+            } else {
+              appFiles.add(pageName)
+            }
+          }
+
+          const routeEntry = {
+            route: normalizePathSep(pageName),
+            filePath: fileName,
+          }
+          if (entry.isAppRouterRoute) {
+            appRouteHandlers.push(routeEntry)
+          } else {
+            appRoutes.push(routeEntry)
+          }
+
+          if (routedPages.includes(pageName)) {
+            return
+          }
+        } else {
+          if (useFileSystemPublicRoutes) {
+            pageFiles.add(pageName)
+            opts.fsChecker.nextDataRoutes.add(pageName)
+          }
+
+          const routeEntry = { route: pageName, filePath: fileName }
+          if (entry.isPagesApiRoute) {
+            pageApiRoutes.push(routeEntry)
+          } else {
+            pageRoutes.push(routeEntry)
+          }
+        }
+
+        if (entry.kind === 'app') {
+          appPageFilePaths.set(pageName, fileName)
+        } else {
+          pagesPageFilePaths.set(pageName, fileName)
+        }
+
+        if (appDir && pageNameSet.has(pageName)) {
+          conflictingAppPagePaths.add(pageName)
+        } else {
+          pageNameSet.add(pageName)
+        }
+
+        if (entry.hasNestedMiddleware) {
+          nestedMiddleware.push(pageName)
+          return
+        }
+
+        if (!routedPages.includes(pageName)) {
+          routedPages.push(pageName)
+        }
+      }
+
+      const createAppEntry = (
+        pageName: string,
+        originalPageName: string,
+        overrides: Partial<Omit<AppAggregationEntry, 'kind'>> = {}
+      ): AppAggregationEntry => ({
+        kind: 'app',
+        pageName,
+        originalPageName,
+        isRootNotFound: false,
+        isAppLayout: false,
+        isAppRouterPage: false,
+        isAppRouterRoute: false,
+        hasNestedMiddleware: false,
+        ...overrides,
+      })
+
+      const createPagesEntry = (
+        pageName: string,
+        isPagesApiRoute: boolean
+      ): PagesAggregationEntry => ({
+        kind: 'pages',
+        pageName,
+        isPagesApiRoute,
+        hasNestedMiddleware: /[\\/]_middleware$/.test(pageName),
+      })
+
       for (const fileName of sortedKnownFiles) {
         if (
-          !files.includes(fileName) &&
+          !watchFiles.has(fileName) &&
           !directories.some((d) => fileName.startsWith(d))
         ) {
           continue
@@ -515,6 +679,13 @@ async function startWatcher(
           (watchTime && watchTime !== nextWatchTime)
         fileWatchTimes.set(fileName, nextWatchTime)
 
+        if (fileChanged) {
+          rootFileCache.delete(fileName)
+          pageNameCache.delete(`app:${fileName}`)
+          pageNameCache.delete(`pages:${fileName}`)
+          aggregationFileCache.delete(fileName)
+        }
+
         if (envFiles.includes(fileName)) {
           if (fileChanged) {
             envChange = true
@@ -552,26 +723,40 @@ async function startWatcher(
             )
         )
 
-        const rootFile = absolutePathToPage(fileName, {
-          dir: dir,
-          extensions: nextConfig.pageExtensions,
-          keepIndex: false,
-          pagesType: PAGE_TYPES.ROOT,
-        })
+        let rootFileData = rootFileCache.get(fileName)
+
+        if (!rootFileData) {
+          const rootFile = absolutePathToPage(fileName, {
+            dir: dir,
+            extensions: nextConfig.pageExtensions,
+            keepIndex: false,
+            pagesType: PAGE_TYPES.ROOT,
+          })
+
+          rootFileData = { rootFile }
+          rootFileCache.set(fileName, rootFileData)
+        }
+
+        const { rootFile } = rootFileData
 
         if (isMiddlewareFile(rootFile)) {
-          const getStaticInfoIncludingLayouts = (
-            require('../../../build/get-static-info-including-layouts') as typeof import('../../../build/get-static-info-including-layouts')
-          ).getStaticInfoIncludingLayouts
-          const staticInfo = await getStaticInfoIncludingLayouts({
-            pageFilePath: fileName,
-            config: nextConfig,
-            appDir: appDir,
-            page: rootFile,
-            isDev: true,
-            isInsideAppDir: isAppPath,
-            pageExtensions: nextConfig.pageExtensions,
-          })
+          if (!rootFileData.middlewareMatchers) {
+            const getStaticInfoIncludingLayouts = (
+              require('../../../build/get-static-info-including-layouts') as typeof import('../../../build/get-static-info-including-layouts')
+            ).getStaticInfoIncludingLayouts
+            const staticInfo = await getStaticInfoIncludingLayouts({
+              pageFilePath: fileName,
+              config: nextConfig,
+              appDir: appDir,
+              page: rootFile,
+              isDev: true,
+              isInsideAppDir: isAppPath,
+              pageExtensions: nextConfig.pageExtensions,
+            })
+            rootFileData.middlewareMatchers = staticInfo.middleware
+              ?.matchers || [{ regexp: '^/.*$', originalSource: '/:path*' }]
+          }
+
           if (nextConfig.output === 'export') {
             Log.error(
               'Middleware cannot be used with "output: export". See more info here: https://nextjs.org/docs/advanced-features/static-html-export'
@@ -585,9 +770,7 @@ async function startWatcher(
             'actualMiddlewareFile',
             serverFields.actualMiddlewareFile
           )
-          middlewareMatchers = staticInfo.middleware?.matchers || [
-            { regexp: '^/.*$', originalSource: '/:path*' },
-          ]
+          middlewareMatchers = rootFileData.middlewareMatchers
           continue
         }
         if (isInstrumentationHookFile(rootFile)) {
@@ -604,44 +787,62 @@ async function startWatcher(
           enabledTypeScript = true
         }
 
-        if (!(isAppPath || isPagePath)) {
+        const cachedRouteEntry = !fileChanged
+          ? aggregationFileCache.get(fileName)
+          : undefined
+
+        if (cachedRouteEntry) {
+          if (cachedRouteEntry.kind !== 'skip') {
+            applyRouteEntry(fileName, cachedRouteEntry)
+          }
           continue
         }
 
-        // Collect all current filenames for the TS plugin to use
-        devPageFiles.add(fileName)
+        if (!(isAppPath || isPagePath)) {
+          aggregationFileCache.set(fileName, { kind: 'skip' })
+          continue
+        }
 
-        let pageName = absolutePathToPage(fileName, {
-          dir: isAppPath ? appDir! : pagesDir!,
-          extensions: nextConfig.pageExtensions,
-          keepIndex: isAppPath,
-          pagesType: isAppPath ? PAGE_TYPES.APP : PAGE_TYPES.PAGES,
-        })
+        const pageNameCacheKey = `${isAppPath ? 'app' : 'pages'}:${fileName}`
+        let pageName = pageNameCache.get(pageNameCacheKey)
 
-        if (
-          isAppPath &&
-          appDir &&
-          isMetadataRouteFile(
-            fileName.replace(appDir, ''),
-            nextConfig.pageExtensions,
-            true
-          )
-        ) {
-          const getPageStaticInfo = (
-            require('../../../build/analysis/get-page-static-info') as typeof import('../../../build/analysis/get-page-static-info')
-          ).getPageStaticInfo
-          const staticInfo = await getPageStaticInfo({
-            pageFilePath: fileName,
-            nextConfig: {},
-            page: pageName,
-            isDev: true,
-            pageType: PAGE_TYPES.APP,
+        if (!pageName) {
+          pageName = absolutePathToPage(fileName, {
+            dir: isAppPath ? appDir! : pagesDir!,
+            extensions: nextConfig.pageExtensions,
+            keepIndex: isAppPath,
+            pagesType: isAppPath ? PAGE_TYPES.APP : PAGE_TYPES.PAGES,
           })
 
-          pageName = normalizeMetadataPageToRoute(
-            pageName,
-            !!(staticInfo.generateSitemaps || staticInfo.generateImageMetadata)
-          )
+          if (
+            isAppPath &&
+            appDir &&
+            isMetadataRouteFile(
+              fileName.replace(appDir, ''),
+              nextConfig.pageExtensions,
+              true
+            )
+          ) {
+            const getPageStaticInfo = (
+              require('../../../build/analysis/get-page-static-info') as typeof import('../../../build/analysis/get-page-static-info')
+            ).getPageStaticInfo
+            const staticInfo = await getPageStaticInfo({
+              pageFilePath: fileName,
+              nextConfig: {},
+              page: pageName,
+              isDev: true,
+              pageType: PAGE_TYPES.APP,
+            })
+
+            pageName = normalizeMetadataPageToRoute(
+              pageName,
+              !!(
+                staticInfo.generateSitemaps || staticInfo.generateImageMetadata
+              )
+            )
+          }
+
+          pageNameCache.set(pageNameCacheKey, pageName)
         }
 
         if (
@@ -652,112 +853,86 @@ async function startWatcher(
           Log.error(
             'API Routes cannot be used with "output: export". See more info here: https://nextjs.org/docs/advanced-features/static-html-export'
           )
+          aggregationFileCache.set(fileName, { kind: 'skip' })
           continue
         }
 
         if (isAppPath) {
           // Track root not-found
           if (validFileMatcher.isRootNotFound(fileName)) {
-            hasRootAppNotFound = true
+            const entry = createAppEntry(normalizePathSep(pageName), pageName, {
+              isRootNotFound: true,
+            })
+            aggregationFileCache.set(fileName, entry)
+            applyRouteEntry(fileName, entry)
             continue
           }
 
           const normalizedPageName = normalizePathSep(pageName)
 
           // Skip files/directories starting with `_` in the app directory
-          if (normalizedPageName.includes('/_')) continue
-
-          // Record parallel route slots
-          addSlotIfNew(slots, normalizedPageName)
+          if (normalizedPageName.includes('/_')) {
+            aggregationFileCache.set(fileName, { kind: 'skip' })
+            continue
+          }
 
           // Handle layouts separately - they don't get added to appPaths
           if (validFileMatcher.isAppLayoutPage(fileName)) {
-            const layoutRoute = ensureLeadingSlash(
-              normalizeAppPath(normalizedPageName).replace(/\/layout$/, '')
-            )
-            layoutRoutes.push({ route: layoutRoute, filePath: fileName })
+            const entry = createAppEntry(normalizedPageName, pageName, {
+              isAppLayout: true,
+            })
+            aggregationFileCache.set(fileName, entry)
+            applyRouteEntry(fileName, entry)
             continue
           }
 
           // Skip non-router pages (loading.tsx, error.tsx, etc.)
-          if (!validFileMatcher.isAppRouterPage(fileName)) continue
+          if (!validFileMatcher.isAppRouterPage(fileName)) {
+            const entry = createAppEntry(normalizedPageName, pageName)
+            aggregationFileCache.set(fileName, entry)
+            applyRouteEntry(fileName, entry)
+            continue
+          }
 
           const originalPageName = pageName
           pageName = normalizeAppPath(pageName).replace(/%5F/g, '_')
-          const appRoute = normalizePathSep(pageName)
+          const isAppRouterRoute = validFileMatcher.isAppRouterRoute(fileName)
+          let staticMetadataPath: string | undefined
 
-          if (!appPaths[pageName]) {
-            appPaths[pageName] = []
-          }
-          appPaths[pageName].push(
-            opts.turbo
-              ? originalPageName.replace(/%5F/g, '_')
-              : originalPageName
-          )
-
-          if (useFileSystemPublicRoutes) {
-            if (appDir && isStaticMetadataFile(fileName.replace(appDir, ''))) {
-              const segment = path.posix.dirname(pageName)
-              const lastSegment = path.posix.basename(pageName)
-              const normalizedPath = fillMetadataSegment(
-                segment,
-                {},
-                lastSegment,
-                true
-              )
-              staticMetadataFiles.set(normalizedPath, fileName)
-            } else {
-              appFiles.add(pageName)
-            }
+          if (
+            appDir &&
+            useFileSystemPublicRoutes &&
+            isStaticMetadataFile(fileName.replace(appDir, ''))
+          ) {
+            const segment = path.posix.dirname(pageName)
+            const lastSegment = path.posix.basename(pageName)
+            staticMetadataPath = fillMetadataSegment(
+              segment,
+              {},
+              lastSegment,
+              true
+            )
           }
 
-          const routeEntry = { route: appRoute, filePath: fileName }
-          if (validFileMatcher.isAppRouterRoute(fileName)) {
-            appRouteHandlers.push(routeEntry)
-          } else {
-            appRoutes.push(routeEntry)
-          }
-
-          if (routedPages.includes(pageName)) continue
+          const entry = createAppEntry(pageName, originalPageName, {
+            isAppRouterPage: true,
+            isAppRouterRoute,
+            staticMetadataPath,
+            hasNestedMiddleware: /[\\/]_middleware$/.test(pageName),
+          })
+          aggregationFileCache.set(fileName, entry)
+          applyRouteEntry(fileName, entry)
+          continue
         } else {
           // Pages router
-          if (useFileSystemPublicRoutes) {
-            pageFiles.add(pageName)
-            opts.fsChecker.nextDataRoutes.add(pageName)
-          }
+          const isPagesApiRoute = pageName.startsWith('/api/')
+          const normalizedPageName = normalizePathSep(pageName)
 
-          const route = normalizePathSep(pageName)
-          const routeEntry = { route, filePath: fileName }
-          if (pageName.startsWith('/api/')) {
-            pageApiRoutes.push(routeEntry)
-          } else {
-            pageRoutes.push(routeEntry)
-          }
-        }
-
-        // Record pages
-        if (isAppPath) {
-          appPageFilePaths.set(pageName, fileName)
-        } else {
-          pagesPageFilePaths.set(pageName, fileName)
-        }
-
-        if (appDir && pageNameSet.has(pageName)) {
-          conflictingAppPagePaths.add(pageName)
-        } else {
-          pageNameSet.add(pageName)
-        }
-
-        /**
-         * If there is a middleware that is not declared in the root we will
-         * warn without adding it so it doesn't make its way into the system.
-         */
-        if (/[\\\\/]_middleware$/.test(pageName)) {
-          nestedMiddleware.push(pageName)
+          const entry = createPagesEntry(normalizedPageName, isPagesApiRoute)
+          aggregationFileCache.set(fileName, entry)
+          applyRouteEntry(fileName, entry)
           continue
         }
-
-        routedPages.push(pageName)
       }
 
       const numConflicting = conflictingAppPagePaths.size
