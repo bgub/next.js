@@ -12,7 +12,9 @@ import {
   generateValidatorFile,
   generateValidatorFileStrict,
   generateRouteTypesFileStrict,
+  generateServerTypesFile,
 } from './typegen'
+import { writeCacheLifeTypes } from './cache-life-type-utils'
 import { tryToParsePath } from '../../../lib/try-to-parse-path'
 import {
   extractInterceptionRouteInformation,
@@ -24,6 +26,7 @@ import {
 } from '../../../shared/lib/entry-constants'
 import { normalizePathSep } from '../../../shared/lib/page-path/normalize-path-sep'
 import type { RouteInfo, SlotInfo } from '../../../build/file-classifier'
+import type { CacheLife } from '../../../server/use-cache/cache-life'
 
 // Internal route info with extracted params for the manifest
 interface ManifestRouteInfo {
@@ -46,8 +49,18 @@ export interface RouteTypesManifest {
   layoutPaths: Set<string>
   appRouteHandlers: Set<string>
   pageApiRoutes: Set<string>
-  /** Direct mapping from file paths to routes for validation */
+  /** Direct mapping from file paths to routes for validation (resolves intercepting routes) */
   filePathToRoute: Map<string, string>
+  /** Layout parameters for root params extraction */
+  collectedRootParams?: Record<
+    string,
+    {
+      param: string
+      optional: boolean
+    }[]
+  >
+  /** Cache life configuration */
+  cacheLifeConfig?: { [profile: string]: CacheLife }
 }
 
 // Convert a custom-route source string (`/blog/:slug`, `/docs/:path*`, ...)
@@ -444,4 +457,47 @@ export async function writeRouteTypesEntryFile(
   lines.push('') // trailing newline
 
   await fs.promises.writeFile(entryFilePath, lines.join('\n'))
+}
+
+export async function writeServerTypesFile(
+  manifest: RouteTypesManifest,
+  filePath: string
+) {
+  const dirname = path.dirname(filePath)
+
+  if (!fs.existsSync(dirname)) {
+    await fs.promises.mkdir(dirname, { recursive: true })
+  }
+
+  // Extract root params from collected layout params
+  if (manifest.collectedRootParams) {
+    const allRootParams = new Map<
+      string,
+      { param: string; optional: boolean }
+    >()
+
+    for (const [, params] of Object.entries(manifest.collectedRootParams)) {
+      for (const { param, optional } of params) {
+        const existing = allRootParams.get(param)
+        allRootParams.set(param, {
+          param,
+          optional: existing ? existing.optional || optional : optional,
+        })
+      }
+    }
+
+    if (allRootParams.size > 0) {
+      await fs.promises.writeFile(
+        filePath,
+        generateServerTypesFile(Array.from(allRootParams.values()))
+      )
+    }
+  }
+}
+
+export async function writeCacheLifeTypesFile(
+  manifest: RouteTypesManifest,
+  filePath: string
+) {
+  writeCacheLifeTypes(manifest.cacheLifeConfig, filePath)
 }

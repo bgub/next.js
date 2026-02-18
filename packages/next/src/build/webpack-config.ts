@@ -52,7 +52,6 @@ import { ClientReferenceManifestPlugin } from './webpack/plugins/flight-manifest
 import { FlightClientEntryPlugin as NextFlightClientEntryPlugin } from './webpack/plugins/flight-client-entry-plugin'
 import { RspackFlightClientEntryPlugin } from './webpack/plugins/rspack-flight-client-entry-plugin'
 import { DeferredEntriesPlugin } from './webpack/plugins/deferred-entries-plugin'
-import { NextTypesPlugin } from './webpack/plugins/next-types-plugin'
 import type {
   Feature,
   SWC_TARGET_TRIPLE,
@@ -326,8 +325,6 @@ export default async function getBaseWebpackConfig(
     pagesDir,
     reactProductionProfiling = false,
     rewrites,
-    originalRewrites,
-    originalRedirects,
     runWebpackSpan,
     appDir,
     middlewareMatchers,
@@ -2164,18 +2161,6 @@ export default async function getBaseWebpackConfig(
               isEdgeServer,
               encryptionKey,
             })),
-      hasAppDir &&
-        !isClient &&
-        new NextTypesPlugin({
-          dir,
-          distDir: config.distDir,
-          appDir,
-          dev,
-          isEdgeServer,
-          pageExtensions: config.pageExtensions,
-          originalRewrites,
-          originalRedirects,
-        }),
       !dev &&
         isClient &&
         !!config.experimental.sri?.algorithm &&

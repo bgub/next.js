@@ -218,6 +218,8 @@ import {
   writeRouteTypesManifest,
   writeValidatorFile,
   writeRouteTypesEntryFile,
+  writeServerTypesFile,
+  writeCacheLifeTypesFile,
 } from '../server/lib/router-utils/route-types-utils'
 import { Lockfile } from './lockfile'
 import {
@@ -1369,6 +1371,91 @@ export default async function build(
           const validatorFilePath = path.join(distDir, 'types', 'validator.ts')
           await mkdir(path.dirname(routeTypesFilePath), { recursive: true })
 
+          const isSimpleDynamicSegment = (segment: string) =>
+            /^\[[^[.\]]+\]$/.test(segment)
+
+          const isSubpath = (
+            parentRoute: string,
+            possibleRootRoute: string
+          ) => {
+            const parentSegments = parentRoute.split('/').slice(1)
+            const possibleRootSegments = possibleRootRoute.split('/').slice(1)
+
+            if (
+              possibleRootSegments.length > parentSegments.length ||
+              !possibleRootSegments.length
+            ) {
+              return false
+            }
+
+            return possibleRootSegments.every(
+              (segment, index) => segment === parentSegments[index]
+            )
+          }
+
+          // Collect layout parameters for root params extraction
+          const collectedRootParams: Record<
+            string,
+            {
+              param: string
+              optional: boolean
+            }[]
+          > = {}
+
+          // Find layouts that could be root layouts (have dynamic segments)
+          const layoutsWithParams = layoutRoutes
+            .map(({ route }) => {
+              const segments = route.split('/').slice(1)
+              const foundParams = segments
+                .filter((segment) => isSimpleDynamicSegment(segment))
+                .map((segment) => segment.slice(1, -1))
+
+              return {
+                route,
+                params: foundParams,
+                allSegmentsAreDynamic:
+                  segments.length > 0 &&
+                  segments.every((segment) => isSimpleDynamicSegment(segment)),
+              }
+            })
+            .filter(
+              ({ params, allSegmentsAreDynamic }) =>
+                params.length > 0 && allSegmentsAreDynamic
+            )
+
+          // Keep the previous root-layout selection behavior: shortest valid path wins,
+          // and parameters become optional when there are multiple root layouts.
+          const sortedLayouts = layoutsWithParams.sort(
+            (a, b) => b.route.split('/').length - a.route.split('/').length
+          )
+
+          if (sortedLayouts.length > 0) {
+            let rootLayout = sortedLayouts[sortedLayouts.length - 1]
+            const rootParams = new Set(rootLayout.params)
+            let isMultipleRootLayouts = false
+
+            for (const layout of sortedLayouts) {
+              if (isSubpath(rootLayout.route, layout.route)) {
+                rootLayout = layout
+                rootParams.clear()
+                for (const param of layout.params) {
+                  rootParams.add(param)
+                }
+              } else {
+                isMultipleRootLayouts = true
+                for (const param of layout.params) {
+                  rootParams.add(param)
+                }
+              }
+            }
+
+            collectedRootParams[rootLayout.route] = Array.from(rootParams).map(
+              (param) => ({
+                param,
+                optional: isMultipleRootLayouts,
+              })
+            )
+          }
           const routeTypesManifest = await createRouteTypesManifest({
             dir,
             pageRoutes,
@@ -1382,6 +1469,10 @@ export default async function build(
             validatorFilePath,
           })
 
+          // Add collected root params and cache life config to manifest
+          routeTypesManifest.collectedRootParams = collectedRootParams
+          routeTypesManifest.cacheLifeConfig = config.cacheLife
+
           await writeRouteTypesManifest(
             routeTypesManifest,
             routeTypesFilePath,
@@ -1392,6 +1483,29 @@ export default async function build(
             validatorFilePath,
             Boolean(config.experimental.strictRouteTypes)
           )
+
+          // Generate server types if we have root params
+          if (Object.keys(collectedRootParams).length > 0) {
+            const serverTypesFilePath = path.join(
+              distDir,
+              'types',
+              'server.d.ts'
+            )
+            await writeServerTypesFile(routeTypesManifest, serverTypesFilePath)
+          }
+
+          // Generate cache life types if we have cache life config
+          if (config.cacheLife) {
+            const cacheLifeTypesFilePath = path.join(
+              distDir,
+              'types',
+              'cache-life.d.ts'
+            )
+            await writeCacheLifeTypesFile(
+              routeTypesManifest,
+              cacheLifeTypesFilePath
+            )
+          }
 
           // Write the entry file at {distDirRoot}/types/routes.d.ts
           // This ensures next-env.d.ts has a consistent import path
@@ -3838,8 +3952,8 @@ export default async function build(
 
       const finalizingPageOptimizationStart = process.hrtime()
       const postBuildSpinner = createSpinner('Finalizing page optimization')
-      let buildTracesSpinner
-      let buildTracesStart
+      let buildTracesSpinner: ReturnType<typeof createSpinner> | undefined
+      let buildTracesStart: [number, number] | undefined
       if (buildTracesPromise) {
         buildTracesStart = process.hrtime()
         buildTracesSpinner = createSpinner('Collecting build traces')
