@@ -289,6 +289,18 @@ export class NextServer implements NextWrapperServer {
       }
     )
 
+    if ('contentCollections' in config && config.contentCollections) {
+      // Initialize directly with the already-loaded config so the main
+      // server process doesn't re-require next.config.js at request time.
+      const { _initContentCollections } =
+        require('./content/index') as typeof import('./content/index')
+      _initContentCollections(config.contentCollections)
+
+      // Also set env var so worker processes (which don't share globalThis)
+      // can find next.config.js via the ensureState() fallback path.
+      process.env.__NEXT_PRIVATE_CONTENT_DIR = dir
+    }
+
     // check serialized build config when available
     if (!this.options.dev) {
       try {

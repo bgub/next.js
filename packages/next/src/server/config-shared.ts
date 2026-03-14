@@ -273,6 +273,8 @@ export interface NextJsWebpackConfig {
   ): any
 }
 
+export type { CollectionDefinition } from './content/types'
+
 /**
  * Set of options for React Compiler that Next.js currently supports.
  *
@@ -1591,6 +1593,15 @@ export interface NextConfig {
   watchOptions?: {
     pollIntervalMs?: number
   }
+
+  /**
+   * Define typed content collections (MDX, JSON, etc.) that can be queried
+   * via `import { getCollection, getEntry } from "next/content"` in Server Components.
+   */
+  contentCollections?: Record<
+    string,
+    import('./content/types').CollectionDefinition
+  >
 
   /**
    * User Agent of bots that can handle streaming metadata.

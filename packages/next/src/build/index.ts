@@ -987,6 +987,10 @@ export default async function build(
         )
       loadedConfig = config
 
+      if (config.contentCollections) {
+        process.env.__NEXT_PRIVATE_CONTENT_DIR = dir
+      }
+
       // Validate deploymentId if provided
       if (config.deploymentId !== undefined) {
         if (typeof config.deploymentId !== 'string') {

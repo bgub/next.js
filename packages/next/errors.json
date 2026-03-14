@@ -1145,5 +1145,16 @@
   "1144": "Prefetch inlining is enabled but no hints were found for route \"%s\". This is a bug in the Next.js build pipeline — prefetch-hints.json should contain an entry for every route that produces segment data.",
   "1145": "Internal Next.js Error: Prefetch inlining is enabled but no hints were found for route \"%s\". prefetch-hints.json should contain an entry for every route that produces segment data. This is a bug in Next.js.",
   "1146": "Internal Next.js Error: Prefetch inlining is enabled but no hint tree was provided during incremental static revalidation. The prefetch-hints.json manifest should contain an entry for this route. This is a bug in Next.js.",
-  "1147": "Turbopack database compaction is not supported on this platform"
+  "1147": "Turbopack database compaction is not supported on this platform",
+  "1148": "Content collection \"%s\" not found. Available collections: %s",
+  "1149": "Content collections not configured. Add contentCollections to next.config.",
+  "1150": "Schema validation failed for entry \"%s\" in collection \"%s\": %s",
+  "1151": "Schema validation failed: %s",
+  "1152": "Content collections: failed to load config from \"%s\": %s",
+  "1153": "Computed field error in collection \"%s\" for entry \"%s\": %s",
+  "1154": "Content collections: __NEXT_PRIVATE_CONTENT_DIR is not set. This usually means a worker process started before the main server initialized. Ensure the Next.js server is fully started before accessing content collections.",
+  "1155": "Content glob loader: directory \"%s\" not found (resolved to \"%s\"): %s",
+  "1156": "Failed to read content file \"%s\" in glob loader (base: \"%s\"): %s",
+  "1157": "Failed to parse content file \"%s\": %s",
+  "1158": "Content collections: __NEXT_PRIVATE_CONTENT_DIR is not set."
 }

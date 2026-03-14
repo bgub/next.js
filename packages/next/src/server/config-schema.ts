@@ -431,6 +431,22 @@ export const configSchema: zod.ZodType<NextConfig> = z.lazy(() =>
       .optional(),
     cacheMaxMemorySize: z.number().optional(),
     cleanDistDir: z.boolean().optional(),
+    contentCollections: z
+      .record(
+        z.string(),
+        z.object({
+          loader: z.custom<import('./content/types').ContentLoader>(
+            (val) => typeof val === 'object' && val !== null && 'load' in val
+          ),
+          schema: z.any().optional(),
+          computed: z
+            .custom<
+              ((entry: Record<string, any>) => Record<string, any>) | undefined
+            >()
+            .optional(),
+        })
+      )
+      .optional(),
     compiler: z
       .strictObject({
         emotion: z

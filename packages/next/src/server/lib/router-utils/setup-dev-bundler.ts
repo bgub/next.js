@@ -367,6 +367,23 @@ async function startWatcher(
     const app = appDir ? [appDir] : []
     const directories = [...pages, ...app]
 
+    // Add content collection watch paths for file watching
+    const contentWatchPaths: string[] = []
+    const contentFileTimestamps = new Map<string, number>()
+    let contentTimestampsInitialized = false
+    if (nextConfig.contentCollections) {
+      for (const def of Object.values(nextConfig.contentCollections)) {
+        if (def.loader.watchPaths) {
+          contentWatchPaths.push(
+            ...def.loader.watchPaths.map((p: string) =>
+              path.isAbsolute(p) ? p : path.resolve(dir, p)
+            )
+          )
+        }
+      }
+      contentWatchPaths.forEach((p) => directories.push(p))
+    }
+
     const rootDir = pagesDir || appDir
     const files = [
       ...getPossibleMiddlewareFilenames(
@@ -446,6 +463,41 @@ async function startWatcher(
       pageFiles.clear()
       staticMetadataFiles.clear()
       devPageFiles.clear()
+
+      // Detect content collection file changes and trigger HMR
+      let contentCollectionChanged = false
+      if (contentWatchPaths.length > 0) {
+        for (const [fileName, info] of knownFiles) {
+          if (!contentWatchPaths.some((d) => fileName.startsWith(d))) {
+            continue
+          }
+          const timestamp =
+            info && typeof info === 'object' && 'timestamp' in info
+              ? (info as any).timestamp
+              : info
+          if (typeof timestamp !== 'number') continue
+
+          const prev = contentFileTimestamps.get(fileName)
+          if (prev === undefined && contentTimestampsInitialized) {
+            // New file added after initial population
+            contentCollectionChanged = true
+          } else if (prev !== undefined && prev !== timestamp) {
+            // Existing file modified
+            contentCollectionChanged = true
+          }
+          contentFileTimestamps.set(fileName, timestamp)
+        }
+
+        // Detect deleted files
+        for (const trackedFile of contentFileTimestamps.keys()) {
+          if (!knownFiles.has(trackedFile)) {
+            contentCollectionChanged = true
+            contentFileTimestamps.delete(trackedFile)
+          }
+        }
+
+        contentTimestampsInitialized = true
+      }
 
       const sortedKnownFiles: string[] = [...knownFiles.keys()].sort(
         sortByPageExts(nextConfig.pageExtensions)
@@ -793,7 +845,7 @@ async function startWatcher(
         }
       }
 
-      if (envChange || tsconfigChange) {
+      if (envChange || tsconfigChange || contentCollectionChanged) {
         if (envChange) {
           writeEnvDefinitions = true
 
@@ -936,8 +988,17 @@ async function startWatcher(
             }
           })
         }
+        if (contentCollectionChanged) {
+          const { _invalidateCollection } =
+            require('../../../server/content/index') as typeof import('../../../server/content/index')
+          _invalidateCollection()
+        }
+
         await hotReloader.invalidate({
-          reloadAfterInvalidation: envChange,
+          // reloadAfterInvalidation triggers clearAllModuleContexts() +
+          // SERVER_COMPONENT_CHANGES inside the hot reloader, which forces
+          // server components to re-evaluate and call getCollection() again.
+          reloadAfterInvalidation: envChange || contentCollectionChanged,
         })
       }
 

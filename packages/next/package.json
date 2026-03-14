@@ -19,6 +19,8 @@
     "compat",
     "cache.js",
     "cache.d.ts",
+    "content.js",
+    "content.d.ts",
     "constants.js",
     "constants.d.ts",
     "document.js",
