@@ -1,6 +1,9 @@
 import { consoleAsyncStorage } from '../app-render/console-async-storage.external'
-import { getFileLogger } from '../dev/browser-logs/file-logger'
+import { getLogStream, methodToLevel } from '../dev/browser-logs/file-logger'
 import { formatConsoleArgs } from '../../client/lib/console'
+
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_REGEX = /\u001b\[[0-9;]*m/g
 
 type InterceptableConsoleMethod =
   | 'error'
@@ -37,13 +40,14 @@ function patchConsoleMethodDEV(methodName: InterceptableConsoleMethod): void {
       } else {
         const ret = originalMethod.apply(this, args)
 
-        const fileLogger = getFileLogger()
         const message = formatConsoleArgs(args)
         // Strip ANSI escape codes for file logging
-        // eslint-disable-next-line no-control-regex
-        const ansiEscapeRegex = new RegExp('\u001b\\[[0-9;]*m', 'g')
-        const cleanMessage = message.replace(ansiEscapeRegex, '')
-        fileLogger.logServer(methodName.toUpperCase(), cleanMessage)
+        const cleanMessage = message.replace(ANSI_ESCAPE_REGEX, '')
+        getLogStream().emit(methodToLevel(methodName), cleanMessage, {
+          source: 'userland',
+          scope: 'console',
+          structured: { method: methodName.toUpperCase() },
+        })
         return ret
       }
     }

@@ -1,185 +1,216 @@
+/**
+ * Structured logging for Next.js dev mode.
+ * Ring buffer for bounded memory, optional file sink for MCP.
+ */
 import fs from 'fs'
 import path from 'path'
 
-export interface LogEntry {
-  timestamp: string
-  source: 'Server' | 'Browser'
-  level: string
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+export type LogSource = 'system' | 'userland' | 'browser'
+
+export interface LogEvent {
+  ts: number
+  level: LogLevel
+  source: LogSource
+  scope?: string
   message: string
+  structured?: Record<string, unknown>
 }
 
-// Logging server and browser logs to a file
-export class FileLogger {
-  private logFilePath: string = ''
-  private isInitialized: boolean = false
-  private logQueue: string[] = []
-  private flushTimer: NodeJS.Timeout | null = null
-  private mcpServerEnabled: boolean = false
+export interface LogSink {
+  write(event: LogEvent): void
+  close?(): void
+}
 
-  public initialize(distDir: string, mcpServerEnabled: boolean): void {
-    this.logFilePath = path.join(distDir, 'logs', `next-development.log`)
-    this.mcpServerEnabled = mcpServerEnabled
+/** Convert console method name to LogLevel */
+export function methodToLevel(method: string): LogLevel {
+  switch (method.toLowerCase()) {
+    case 'error':
+    case 'assert':
+      return 'error'
+    case 'warn':
+      return 'warn'
+    case 'debug':
+      return 'debug'
+    default:
+      return 'info'
+  }
+}
 
-    if (this.isInitialized) {
-      return
-    }
+export class FileSink implements LogSink {
+  private logFilePath: string
+  private pending: string[] = []
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private flushDelayMs: number
 
-    // Only initialize if mcpServer is enabled
-    if (!this.mcpServerEnabled) {
-      return
-    }
+  constructor(logFilePath: string, flushDelayMs = 100) {
+    this.logFilePath = logFilePath
+    this.flushDelayMs = flushDelayMs
 
-    try {
-      // Clean up the log file on each initialization
-      // ensure the directory exists
-      fs.mkdirSync(path.dirname(this.logFilePath), { recursive: true })
-      fs.writeFileSync(this.logFilePath, '')
-      this.isInitialized = true
-    } catch (error) {
-      console.error(error)
-    }
+    this.ensureFile()
   }
 
-  private formatTimestamp(): string {
-    // Use performance.now() instead of Date.now() for avoid sync IO of cache components
-    const now = performance.now()
-    const hours = Math.floor(now / 3600000)
-      .toString()
-      .padStart(2, '0')
-    const minutes = Math.floor((now % 3600000) / 60000)
-      .toString()
-      .padStart(2, '0')
-    const seconds = Math.floor((now % 60000) / 1000)
-      .toString()
-      .padStart(2, '0')
-    const milliseconds = Math.floor(now % 1000)
-      .toString()
-      .padStart(3, '0')
-    return `${hours}:${minutes}:${seconds}.${milliseconds}`
+  /** Create the log directory and file if they don't exist */
+  private ensureFile(): void {
+    fs.mkdirSync(path.dirname(this.logFilePath), { recursive: true })
+    fs.writeFileSync(this.logFilePath, '')
   }
 
-  private formatLogEntry(entry: LogEntry): string {
-    const { timestamp, source, level, message } = entry
-    return JSON.stringify({ timestamp, source, level, message }) + '\n'
+  /** Map LogLevel back to a display method name matching the old FileLogger format */
+  private static levelToFileMethod(level: LogLevel): string {
+    return level === 'info' ? 'LOG' : level.toUpperCase()
   }
 
-  private scheduleFlush(): void {
-    // Debounce the flush
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
-    }
+  write(event: LogEvent): void {
+    // Format timestamp as HH:MM:SS.mmm (matching old FileLogger)
+    const d = new Date(event.ts)
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    const ss = String(d.getSeconds()).padStart(2, '0')
+    const ms = String(d.getMilliseconds()).padStart(3, '0')
+    const timestamp = `${hh}:${mm}:${ss}.${ms}`
 
-    // Delay the log flush to ensure more logs can be batched together asynchronously
-    this.flushTimer = setTimeout(() => {
-      this.flush()
-    }, 100)
-  }
+    const source = event.source === 'browser' ? 'Browser' : 'Server'
 
-  public getLogQueue(): string[] {
-    return this.logQueue
-  }
+    // Level: use original method name if available, else map from level
+    const method =
+      (event.structured?.method as string) ||
+      FileSink.levelToFileMethod(event.level)
+    const level = method.toUpperCase()
 
-  private flush(): void {
-    if (this.logQueue.length === 0) {
-      return
-    }
-
-    // Only flush to disk if mcpServer is enabled
-    if (!this.mcpServerEnabled) {
-      this.logQueue.length = 0 // Clear the queue without GC overhead
-      this.flushTimer = null
-      return
-    }
-
-    try {
-      // Ensure the directory exists before writing
-      const logDir = path.dirname(this.logFilePath)
-      if (!fs.existsSync(logDir)) {
-        fs.mkdirSync(logDir, { recursive: true })
-      }
-
-      const logsToWrite = this.logQueue.join('')
-      // Writing logs to files synchronously to ensure they're written before returning
-      fs.appendFileSync(this.logFilePath, logsToWrite)
-      this.logQueue.length = 0 // Clear the queue without GC overhead
-    } catch (error) {
-      console.error('Failed to flush logs to file:', error)
-    } finally {
-      this.flushTimer = null
-    }
-  }
-
-  private enqueueLog(formattedEntry: string): void {
-    this.logQueue.push(formattedEntry)
-
-    // Cancel existing timer and start a new one to ensure all logs are flushed together
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
-    }
-
+    this.pending.push(
+      JSON.stringify({ timestamp, source, level, message: event.message }) +
+        '\n'
+    )
     this.scheduleFlush()
   }
 
-  log(source: 'Server' | 'Browser', level: string, message: string): void {
-    // Don't log anything if mcpServer is disabled
-    if (!this.mcpServerEnabled) {
-      return
-    }
-
-    if (!this.isInitialized) {
-      return
-    }
-
-    const logEntry: LogEntry = {
-      timestamp: this.formatTimestamp(),
-      source,
-      level,
-      message,
-    }
-
-    const formattedEntry = this.formatLogEntry(logEntry)
-    this.enqueueLog(formattedEntry)
+  private scheduleFlush(): void {
+    if (this.timer) return // Already scheduled
+    this.timer = setTimeout(() => {
+      this.timer = null
+      this.flush()
+    }, this.flushDelayMs)
   }
 
-  logServer(level: string, message: string): void {
-    this.log('Server', level, message)
+  private flush(): void {
+    if (this.pending.length === 0) return
+    try {
+      fs.appendFileSync(this.logFilePath, this.pending.join(''))
+      this.pending = []
+    } catch (err: any) {
+      // Directory may have been removed by bundler (e.g. webpack cleans distDir).
+      // Recreate it and retry once.
+      if (err?.code === 'ENOENT') {
+        try {
+          this.ensureFile()
+          fs.appendFileSync(this.logFilePath, this.pending.join(''))
+          this.pending = []
+        } catch {
+          // Give up silently
+        }
+      }
+    }
   }
 
-  logBrowser(level: string, message: string): void {
-    this.log('Browser', level, message)
-  }
-
-  // Force flush all queued logs immediately
-  forceFlush(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
+  close(): void {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
     }
     this.flush()
   }
+}
 
-  // Cleanup method to flush logs on process exit
-  destroy(): void {
-    this.forceFlush()
+type LogOpts = {
+  source?: LogSource
+  scope?: string
+  structured?: Record<string, unknown>
+}
+
+export class LogStream {
+  private buf: LogEvent[]
+  private idx = 0
+  private len = 0
+  private readonly cap: number
+  private sinks: LogSink[] = []
+
+  constructor(capacity = 1000) {
+    this.cap = capacity
+    this.buf = new Array(capacity)
+  }
+
+  emit(level: LogLevel, message: string, opts?: LogOpts): void {
+    const event: LogEvent = {
+      ts: Date.now(),
+      level,
+      source: opts?.source ?? 'system',
+      scope: opts?.scope,
+      message,
+      structured: opts?.structured,
+    }
+
+    this.buf[this.idx] = event
+    this.idx = (this.idx + 1) % this.cap
+    if (this.len < this.cap) this.len++
+
+    for (const sink of this.sinks) {
+      try {
+        sink.write(event)
+      } catch {
+        /* ignore sink errors */
+      }
+    }
+  }
+
+  addSink(sink: LogSink): void {
+    this.sinks.push(sink)
+  }
+
+  /** Get the most recent n logs */
+  recent(n = 100): LogEvent[] {
+    const count = Math.min(n, this.len)
+    if (count === 0) return []
+
+    const result = new Array<LogEvent>(count)
+    let ri =
+      this.len < this.cap
+        ? Math.max(0, this.len - count)
+        : (this.idx - count + this.cap) % this.cap
+
+    for (let i = 0; i < count; i++) {
+      result[i] = this.buf[ri]
+      ri = (ri + 1) % this.cap
+    }
+    return result
+  }
+
+  /** Get logs since timestamp */
+  since(timestamp: number, limit?: number): LogEvent[] {
+    const all = this.recent(this.len)
+    const filtered = all.filter((e) => e.ts >= timestamp)
+    return limit ? filtered.slice(-limit) : filtered
+  }
+
+  stats(): { count: number; capacity: number } {
+    return { count: this.len, capacity: this.cap }
+  }
+
+  close(): void {
+    for (const sink of this.sinks) sink.close?.()
+    this.sinks = []
+    this.idx = 0
+    this.len = 0
   }
 }
 
-// Singleton instance
-let fileLogger: FileLogger | null = null
+let instance: LogStream | null = null
 
-export function getFileLogger(): FileLogger {
-  if (!fileLogger || process.env.NODE_ENV === 'test') {
-    fileLogger = new FileLogger()
-  }
-  return fileLogger
+export function getLogStream(): LogStream {
+  return (instance ??= new LogStream())
 }
 
-// Only used for testing
-export function test__resetFileLogger(): void {
-  if (fileLogger) {
-    fileLogger.destroy()
-  }
-  fileLogger = null
+export function initLogStream(capacity?: number): LogStream {
+  instance?.close()
+  return (instance = new LogStream(capacity))
 }
